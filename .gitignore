@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Environment files (.env.example is the committed template)
+.env
+.env.*
+!.env.example
+
+# OS and editor cruft
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Lockfiles are committed on purpose: uv.lock and package-lock.json stay in the repo.
