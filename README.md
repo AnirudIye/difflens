@@ -1,5 +1,7 @@
 # DiffLens
 
+[![CI](https://github.com/AnirudIye/difflens/actions/workflows/ci.yml/badge.svg)](https://github.com/AnirudIye/difflens/actions/workflows/ci.yml)
+
 DiffLens is an AI code review platform for GitHub pull requests. It pairs deterministic static analysis (ruff, detect-secrets, a missing-tests heuristic) with an AI reviewer built on Anthropic Claude, then verifies every file and line the AI cites against the exact commit it reviewed, so hallucinated findings never reach you. Sign in with GitHub OAuth (read-only, public repos), pick a pull request, and an async pipeline built on FastAPI and Next.js fetches the diff, runs the analyzers, dedupes the results, and renders findings with severity, category, confidence, and a concrete recommendation.
 
 ## What it does
