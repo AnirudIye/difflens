@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from app.analysis.diffs.parser import DiffIndex, FileDiff
+from app.analysis.diffs.parser import DiffIndex, FileDiff, FileStatus
 from app.analysis.diffs.validator import is_reviewable, location_exists, touches_change
 
 
-def make_index(path, status="modified", changed_lines=None):
+def make_index(path, status: FileStatus = "modified", changed_lines=None):
     file_diff = FileDiff(path, None, status, changed_lines or set(), [])
     return DiffIndex({path: file_diff})
 

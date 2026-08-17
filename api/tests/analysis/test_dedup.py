@@ -1,11 +1,13 @@
+from typing import Any
+
 import pytest
 
 from app.analysis.dedup import MAX_FINDINGS, dedupe
 from app.analysis.models import Finding
 
 
-def make_finding(**overrides):
-    base = dict(
+def make_finding(**overrides: Any) -> Finding:
+    base: dict[str, Any] = dict(
         file_path="src/app.py",
         start_line=10,
         end_line=10,
@@ -54,6 +56,7 @@ def test_ai_merges_into_deterministic(workspace):
     merged = result[0]
     assert merged.source == "hybrid"
     assert merged.tool == "ruff"
+    assert merged.explanation is not None
     assert "det expl" in merged.explanation
     assert "ai expl" in merged.explanation
     assert merged.confidence == "high"

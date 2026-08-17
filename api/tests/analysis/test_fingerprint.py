@@ -1,9 +1,11 @@
+from typing import Any
+
 from app.analysis.dedup import fingerprint
 from app.analysis.models import Finding
 
 
-def make_finding(**overrides):
-    base = dict(
+def make_finding(**overrides: Any) -> Finding:
+    base: dict[str, Any] = dict(
         file_path="src/app.py",
         start_line=5,
         end_line=5,
