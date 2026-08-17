@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.logging_setup import setup_logging
-from app.routers import auth, health
+from app.routers import auth, health, repositories
 
 log = structlog.get_logger()
 
@@ -58,6 +58,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(repositories.router)
     return app
 
 
