@@ -15,6 +15,27 @@ jobs:
     defaults:
       run:
         working-directory: api
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: difflens
+          POSTGRES_PASSWORD: difflens
+          POSTGRES_DB: difflens
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgresql+psycopg://difflens:difflens@localhost:5432/difflens
+      TEST_DATABASE_URL: postgresql+psycopg://difflens:difflens@localhost:5432/difflens_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
