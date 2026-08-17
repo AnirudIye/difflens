@@ -1,0 +1,6 @@
+# Developed on Windows: normalize everything, but start.sh must land in the
+# Docker image with LF endings or sh refuses to run it.
+* text=auto
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
