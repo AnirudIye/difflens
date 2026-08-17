@@ -79,10 +79,16 @@ npm install
 npm run dev
 ```
 
+Or skip the terminals: `run-api.cmd` and `run-web.cmd` at the repo root launch each half in its own window (the API one uses the venv at `api\.venv`, so run `uv sync` once first).
+
 The databases live in Docker; the API and web app run natively for fast reloads. Postgres publishes on host port 55432 (not 5432) so it never collides with a locally installed PostgreSQL. `docker compose --profile full up -d` additionally builds and runs the API in a container if you want to exercise that path.
+
+## Deployment
+
+Production runs on free tiers: Vercel for the frontend, Render for the API (Docker, driven by `render.yaml` at the repo root), Neon for Postgres. The full runbook, including the env var table and the deploy order that untangles the OAuth callback circular dependency, is in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-Last updated: 2026-08-15
+Last updated: 2026-08-17
