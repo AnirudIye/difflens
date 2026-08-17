@@ -44,13 +44,13 @@ That full string is `DATABASE_URL` in step 2. Alembic runs inside the Render sta
 
 ## 3. Production GitHub OAuth app
 
-Create a **second** OAuth app for production at github.com > Settings > Developer settings > OAuth Apps. It cannot be shared with the dev app: GitHub allows exactly one callback URL per OAuth app, and dev needs `localhost` while prod needs the Vercel domain.
+One OAuth app can serve both environments: register the **production** callback, and local dev keeps working through GitHub's loopback exception (`localhost` redirect URIs are always accepted for OAuth apps, regardless of the registered callback). Point the existing app at production, or create a second app if you prefer strict separation; both work.
 
 - Application name: `DiffLens`
 - Homepage URL: `https://<vercel-app>.vercel.app`
 - Callback URL: `https://<vercel-app>.vercel.app/api/backend/auth/github/callback`
 
-You do not know `<vercel-app>` until step 4, so either create this app after step 4 (recommended, it is why the OAuth app is last in the order) or come back and edit the URLs. Copy the client ID, generate a client secret, and put both into the Render Environment tab, replacing the placeholders.
+You do not know `<vercel-app>` until step 4, so set the callback after step 4 (it is why the OAuth app is last in the order). Generate a client secret (an app can hold two active secrets, so dev and prod can each use their own) and put the client ID and secret into the Render Environment tab, replacing the placeholders.
 
 ## 4. Vercel (web)
 
