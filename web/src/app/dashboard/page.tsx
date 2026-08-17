@@ -43,9 +43,9 @@ export default function DashboardPage() {
               />
               Signed in as {me.login}
             </p>
-            <p className="muted">
-              Your repositories arrive here on Day 3. Nothing else to see yet.
-            </p>
+            <Link className="button" href="/repositories">
+              Browse your repositories
+            </Link>
           </>
         ) : (
           <p className="muted">
