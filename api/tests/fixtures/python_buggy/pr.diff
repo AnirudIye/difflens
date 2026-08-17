@@ -1,0 +1,36 @@
+diff --git a/app/report.py b/app/report.py
+index 3c1a2b4..9e7d1f2 100644
+--- a/app/report.py
++++ b/app/report.py
+@@ -1,8 +1,17 @@
+ """Reporting helpers for the demo app."""
+ 
++import json
+ import subprocess
+ 
++api_token = "hunter2"
++
+ 
+ def collect_disk_usage(target):
+-    result = subprocess.run(["du", "-sh", target], capture_output=True)
++    result = subprocess.run(f"/usr/bin/du -sh {target}", shell=True, capture_output=True)
+     return result.stdout
++
++
++def fetch_reports(owner, filters=[]):
++    query = f"SELECT * FROM reports WHERE owner = '{owner}'"
++    filters.append(query)
++    return run_query(filters)
+diff --git a/tests/test_report.py b/tests/test_report.py
+new file mode 100644
+index 0000000..5b0c7a1
+--- /dev/null
++++ b/tests/test_report.py
+@@ -0,0 +1,7 @@
++"""Smoke tests for the reporting helpers."""
++
++from app.report import fetch_reports
++
++
++def test_fetch_reports_accepts_owner():
++    fetch_reports("alice")

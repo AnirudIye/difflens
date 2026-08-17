@@ -1,0 +1,24 @@
+diff --git a/app/greeting.py b/app/greeting.py
+index 91b3c02..4d78aa1 100644
+--- a/app/greeting.py
++++ b/app/greeting.py
+@@ -3,3 +3,7 @@
+ 
+ def greet(name):
+     return f"Hello, {name}!"
++
++
++def farewell(name):
++    return f"Goodbye, {name}!"
+diff --git a/tests/test_greeting.py b/tests/test_greeting.py
+index 6f1d20e..b8a91c3 100644
+--- a/tests/test_greeting.py
++++ b/tests/test_greeting.py
+@@ -8,6 +8,7 @@
+     [
+         "Ada",
+         "Grace",
++        "Linus",
+     ],
+ )
+ def test_greet_includes_name(name):
