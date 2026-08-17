@@ -1,0 +1,38 @@
+# Render Blueprint for the DiffLens API (the FastAPI backend).
+# Deploy: push this repo, then in the Render dashboard "New +" -> "Blueprint"
+# and point it at the repo. Render reads this file and provisions the service.
+#
+# Secrets marked `sync: false` are NOT stored here (never commit secrets) - set
+# them once in the service's Environment tab. What each value is and where it
+# comes from is in docs/DEPLOYMENT.md.
+services:
+  - type: web
+    name: difflens-api
+    runtime: docker
+    plan: free # bump to "starter" ($7/mo) to avoid free-tier cold starts
+    region: oregon
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: ./api
+    # start.sh in the image runs `alembic upgrade head` before uvicorn, so
+    # migrations happen on every deploy without a preDeployCommand (which the
+    # free plan does not support).
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      # --- Set these yourself in the Environment tab (sync: false) ---
+      - key: DATABASE_URL # Neon pooled string: postgresql+psycopg://USER:PASS@HOST/db?sslmode=require
+        sync: false
+      - key: GITHUB_CLIENT_ID # the production OAuth app, not the dev one
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: SESSION_SECRET # fresh prod value; generation command in docs/DEPLOYMENT.md
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY # fresh prod Fernet key; do not reuse dev
+        sync: false
+      - key: FRONTEND_ORIGIN # the Vercel URL, e.g. https://difflens.vercel.app
+        sync: false
+      - key: REDIS_URL # unused until Day 5
+        sync: false
