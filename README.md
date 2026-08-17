@@ -34,12 +34,12 @@ Everything runs on free tiers: Vercel for the Next.js 15 frontend, Render for th
 
 ## Status
 
-Day 3 of a 10-day build. Live at https://difflens-zeta.vercel.app
+Day 4 of a 10-day build. Live at https://difflens-zeta.vercel.app
 
 - [x] Day 1: repo scaffold, CI, scope and architecture docs
 - [x] Day 2: database schema and GitHub OAuth
 - [x] Day 3: GitHub integration and first deploy
-- [ ] Day 4: deterministic analyzers
+- [x] Day 4: deterministic analyzers
 - [ ] Day 5: worker and queue (descope checkpoint)
 - [ ] Day 6: AI review layer
 - [ ] Day 7: review UI
