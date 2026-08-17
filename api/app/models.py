@@ -1,0 +1,276 @@
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    type_annotation_map = {
+        uuid.UUID: UUID(as_uuid=True),
+        datetime: DateTime(timezone=True),
+        str: Text,
+        dict[str, Any]: JSONB,
+    }
+
+
+def uuid_pk() -> Mapped[uuid.UUID]:
+    return mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
+
+
+def created_now() -> Mapped[datetime]:
+    return mapped_column(server_default=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("github_id", name="uq_users_github_id"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    github_id: Mapped[int] = mapped_column(BigInteger)
+    login: Mapped[str]
+    name: Mapped[str | None]
+    avatar_url: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_sessions_token_hash"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_hash: Mapped[str]
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    created_at: Mapped[datetime] = created_now()
+    last_seen_at: Mapped[datetime | None]
+
+
+class ProviderConnection(Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_provider_connections_user_id_provider"),
+        UniqueConstraint(
+            "provider", "provider_account_id", name="uq_provider_connections_provider_account"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(server_default=text("'github'"))
+    provider_account_id: Mapped[int] = mapped_column(BigInteger)
+    access_token_enc: Mapped[str]
+    scopes: Mapped[str] = mapped_column(server_default=text("''"))
+    token_invalid: Mapped[bool] = mapped_column(server_default=text("false"))
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
+
+
+class Repository(Base):
+    __tablename__ = "repositories"
+    __table_args__ = (
+        UniqueConstraint("github_id", name="uq_repositories_github_id"),
+        UniqueConstraint("full_name", name="uq_repositories_full_name"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    github_id: Mapped[int] = mapped_column(BigInteger)
+    owner: Mapped[str | None]
+    name: Mapped[str | None]
+    full_name: Mapped[str]
+    private: Mapped[bool] = mapped_column(server_default=text("false"))
+    default_branch: Mapped[str | None]
+    html_url: Mapped[str | None]
+    last_synced_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
+
+
+class UserRepository(Base):
+    __tablename__ = "user_repositories"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    repository_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    created_at: Mapped[datetime] = created_now()
+
+
+class PullRequest(Base):
+    __tablename__ = "pull_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id", "github_number", name="uq_pull_requests_repository_id_github_number"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    repository_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE")
+    )
+    github_number: Mapped[int]
+    github_id: Mapped[int | None] = mapped_column(BigInteger)
+    title: Mapped[str]
+    author_login: Mapped[str | None]
+    state: Mapped[str]
+    base_ref: Mapped[str | None]
+    head_ref: Mapped[str | None]
+    base_sha: Mapped[str | None]
+    head_sha: Mapped[str]
+    html_url: Mapped[str | None]
+    github_updated_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_reviews_status",
+        ),
+        Index("ix_reviews_user_id_created_at", "user_id", text("created_at DESC")),
+        Index("ix_reviews_pull_request_id_created_at", "pull_request_id", text("created_at DESC")),
+        # One live review per (PR, commit): reruns are allowed only after failure/cancellation
+        Index(
+            "uq_reviews_pr_sha_live",
+            "pull_request_id",
+            "head_sha",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'completed')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    pull_request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("pull_requests.id", ondelete="CASCADE")
+    )
+    head_sha: Mapped[str]
+    base_sha: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default=text("'queued'"))
+    summary: Mapped[str | None]
+    findings_count: Mapped[int | None]
+    severity_counts: Mapped[dict[str, Any] | None]
+    pipeline_version: Mapped[str | None]
+    error_user_message: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+    started_at: Mapped[datetime | None]
+    completed_at: Mapped[datetime | None]
+
+
+class ReviewJob(Base):
+    __tablename__ = "review_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_review_jobs_status",
+        ),
+        Index("ix_jobs_dequeue", "run_after", postgresql_where=text("status = 'queued'")),
+        Index("ix_jobs_reclaim", "heartbeat_at", postgresql_where=text("status = 'running'")),
+        Index(
+            "uq_jobs_one_live_per_review",
+            "review_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    review_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reviews.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(server_default=text("'queued'"))
+    attempts: Mapped[int] = mapped_column(server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(server_default=text("3"))
+    run_after: Mapped[datetime] = mapped_column(server_default=func.now())
+    cancel_requested: Mapped[bool] = mapped_column(server_default=text("false"))
+    locked_by: Mapped[str | None]
+    locked_at: Mapped[datetime | None]
+    heartbeat_at: Mapped[datetime | None]
+    error_user: Mapped[str | None]
+    error_detail: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+
+
+class Finding(Base):
+    __tablename__ = "findings"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('critical', 'high', 'medium', 'low', 'info')",
+            name="ck_findings_severity",
+        ),
+        CheckConstraint(
+            "category IN ('correctness', 'security', 'performance', "
+            "'maintainability', 'testing', 'style')",
+            name="ck_findings_category",
+        ),
+        CheckConstraint(
+            "confidence IN ('high', 'medium', 'low')",
+            name="ck_findings_confidence",
+        ),
+        CheckConstraint(
+            "source IN ('deterministic', 'ai', 'hybrid')",
+            name="ck_findings_source",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'dismissed', 'accepted')",
+            name="ck_findings_status",
+        ),
+        Index("ix_findings_review_id_severity_file_path", "review_id", "severity", "file_path"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    review_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("reviews.id", ondelete="CASCADE"))
+    file_path: Mapped[str]
+    start_line: Mapped[int | None]
+    end_line: Mapped[int | None]
+    severity: Mapped[str]
+    category: Mapped[str]
+    confidence: Mapped[str | None]
+    source: Mapped[str]
+    fingerprint: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default=text("'open'"))
+    title: Mapped[str]
+    explanation: Mapped[str | None]
+    recommendation: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('useful', 'not_useful', 'dismissed')",
+            name="ck_feedback_verdict",
+        ),
+        UniqueConstraint("finding_id", "user_id", name="uq_feedback_finding_id_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("findings.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    verdict: Mapped[str]
+    note: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
