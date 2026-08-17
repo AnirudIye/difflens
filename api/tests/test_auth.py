@@ -1,0 +1,151 @@
+from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
+
+import httpx
+import pytest
+from sqlalchemy import select
+
+from app import security
+from app.models import ProviderConnection, User
+from app.models import Session as SessionRow
+
+RAW_GITHUB_TOKEN = "gho_raw_token_from_exchange"
+GITHUB_USER = {
+    "id": 424242,
+    "login": "octocat",
+    "name": "The Octocat",
+    "avatar_url": "https://avatars.example.com/octocat.png",
+}
+
+
+@pytest.fixture
+def mock_github(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
+            return httpx.Response(200, json={"access_token": RAW_GITHUB_TOKEN, "scope": ""})
+        if request.url.host == "api.github.com" and request.url.path == "/user":
+            assert request.headers["Authorization"] == f"Bearer {RAW_GITHUB_TOKEN}"
+            return httpx.Response(200, json=GITHUB_USER)
+        return httpx.Response(404)
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+    # TestClient subclassed httpx.Client before this patch, so only the app's
+    # outbound GitHub calls are rerouted.
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport))
+
+
+def _start_login(client) -> str:
+    response = client.get("/auth/github/login", follow_redirects=False)
+    assert response.status_code in (302, 307)
+    return parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+
+
+def test_me_without_cookie_is_401(client):
+    response = client.get("/auth/me")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthenticated"
+
+
+def test_me_with_garbage_cookie_is_401(client):
+    client.cookies.set("session", "definitely-not-a-minted-token")
+    response = client.get("/auth/me")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthenticated"
+
+
+def test_login_redirects_to_github_without_scope(client):
+    response = client.get("/auth/github/login", follow_redirects=False)
+    assert response.status_code in (302, 307)
+
+    location = urlsplit(response.headers["location"])
+    assert location.scheme == "https"
+    assert location.netloc == "github.com"
+    assert location.path == "/login/oauth/authorize"
+
+    params = parse_qs(location.query)
+    assert "scope" not in params
+    assert params["client_id"] == ["test-client-id"]
+    assert params["redirect_uri"] == ["http://localhost:3000/api/backend/auth/github/callback"]
+    assert params["state"][0]
+    assert response.cookies.get("oauth_state")
+
+
+def test_callback_with_mismatched_state_is_400(client):
+    _start_login(client)
+    response = client.get(
+        "/auth/github/callback",
+        params={"code": "irrelevant", "state": "some-other-state"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_state"
+
+
+def test_callback_with_tampered_state_cookie_is_400(client):
+    state = _start_login(client)
+    signed = client.cookies.get("oauth_state")
+    assert signed
+    # The cookie ends in the hex HMAC, so mangling the tail breaks the signature
+    tampered = signed[:-4] + ("0000" if signed[-4:] != "0000" else "1111")
+    client.cookies.delete("oauth_state")
+    client.cookies.set("oauth_state", tampered)
+
+    response = client.get(
+        "/auth/github/callback",
+        params={"code": "irrelevant", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_state"
+
+
+def test_full_login_flow(client, db, mock_github):
+    state = _start_login(client)
+    response = client.get(
+        "/auth/github/callback",
+        params={"code": "good-code", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == "/dashboard"
+    session_token = client.cookies.get("session")
+    assert session_token
+
+    user = db.execute(select(User).where(User.github_id == GITHUB_USER["id"])).scalar_one()
+    assert user.login == "octocat"
+
+    connection = db.execute(
+        select(ProviderConnection).where(ProviderConnection.user_id == user.id)
+    ).scalar_one()
+    assert connection.provider == "github"
+    assert RAW_GITHUB_TOKEN not in connection.access_token_enc
+    assert security.decrypt_token(connection.access_token_enc) == RAW_GITHUB_TOKEN
+
+    me = client.get("/auth/me")
+    assert me.status_code == 200
+    body = me.json()
+    assert body["login"] == "octocat"
+    assert body["github_connected"] is True
+
+    assert client.post("/auth/logout").status_code == 204
+
+    # Re-present the old token to prove the server-side session row is gone,
+    # not just the cookie
+    client.cookies.set("session", session_token)
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_expired_session_is_401(client, db):
+    user = User(github_id=999001, login="expired-user")
+    db.add(user)
+    db.flush()
+    token = security.mint_session(db, user.id)
+    db.flush()
+
+    row = db.execute(select(SessionRow).where(SessionRow.user_id == user.id)).scalar_one()
+    row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    db.flush()
+
+    client.cookies.set("session", token)
+    assert client.get("/auth/me").status_code == 401
