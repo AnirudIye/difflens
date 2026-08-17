@@ -12,8 +12,10 @@ services:
       POSTGRES_USER: difflens
       POSTGRES_PASSWORD: difflens
       POSTGRES_DB: difflens
+    # Published on 55432 so a locally installed PostgreSQL on 5432 never
+    # races this container for the port.
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

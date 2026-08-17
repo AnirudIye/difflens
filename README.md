@@ -79,7 +79,7 @@ npm install
 npm run dev
 ```
 
-The databases live in Docker; the API and web app run natively for fast reloads. `docker compose --profile full up -d` additionally builds and runs the API in a container if you want to exercise that path.
+The databases live in Docker; the API and web app run natively for fast reloads. Postgres publishes on host port 55432 (not 5432) so it never collides with a locally installed PostgreSQL. `docker compose --profile full up -d` additionally builds and runs the API in a container if you want to exercise that path.
 
 ## License
 
