@@ -6,6 +6,28 @@ export type Me = {
   github_connected: boolean;
 };
 
+export type Repository = {
+  id: number;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+  last_synced_at: string | null;
+};
+
+export type PullRequest = {
+  id: number;
+  number: number;
+  title: string;
+  author_login: string;
+  state: string;
+  base_ref: string;
+  head_ref: string;
+  head_sha: string;
+  html_url: string;
+  github_updated_at: string;
+};
+
 export type ApiErrorPayload = {
   code: string;
   message: string;
