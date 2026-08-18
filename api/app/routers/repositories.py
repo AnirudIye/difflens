@@ -1,4 +1,3 @@
-import time
 from typing import Any
 from uuid import UUID
 
@@ -6,62 +5,23 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.deps import CurrentUser, DbSession, GitHubDep, github_reconnect_required
-from app.models import ProviderConnection, PullRequest, Repository, User, UserRepository
+from app.deps import CurrentUser, DbSession, GitHubDep
+from app.models import PullRequest, Repository, User, UserRepository
+from app.routers.github_errors import github_failure, not_found
 from app.services import repo_service
-from app.services.github_client import (
-    GitHubAuthError,
-    GitHubError,
-    GitHubRateLimited,
-    GitHubTransient,
-)
+from app.services.github_client import GitHubError
 
 router = APIRouter(prefix="/repositories")
 
+MISSING = "Repository not found"
+
 
 def _not_found() -> HTTPException:
-    return HTTPException(
-        status_code=404,
-        detail={"code": "not_found", "message": "Repository not found"},
-    )
-
-
-def _mark_token_invalid(db: Session, user: User) -> None:
-    # The failed call may have left a partial sync pending; drop it before flagging
-    db.rollback()
-    connection = db.execute(
-        select(ProviderConnection).where(
-            ProviderConnection.user_id == user.id,
-            ProviderConnection.provider == "github",
-        )
-    ).scalar_one_or_none()
-    if connection is not None:
-        connection.token_invalid = True
-        db.commit()
+    return not_found(MISSING)
 
 
 def _github_failure(db: Session, user: User, exc: GitHubError) -> HTTPException:
-    if isinstance(exc, GitHubAuthError):
-        _mark_token_invalid(db, user)
-        return github_reconnect_required()
-    if isinstance(exc, GitHubRateLimited):
-        retry_after = 60 if exc.reset_at is None else max(exc.reset_at - int(time.time()), 1)
-        return HTTPException(
-            status_code=503,
-            detail={
-                "code": "github_rate_limited",
-                "message": "GitHub API rate limit exceeded, try again later",
-            },
-            headers={"Retry-After": str(retry_after)},
-        )
-    if isinstance(exc, GitHubTransient):
-        return HTTPException(
-            status_code=502,
-            detail={"code": "github_unavailable", "message": "GitHub did not respond as expected"},
-        )
-    # GitHubNotFound: the repo vanished or access was revoked on GitHub's side,
-    # indistinguishable from an id that never existed
-    return _not_found()
+    return github_failure(db, user, exc, MISSING)
 
 
 def _repo_item(repo: Repository) -> dict[str, Any]:
