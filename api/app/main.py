@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.logging_setup import setup_logging
-from app.routers import auth, health, repositories
+from app.routers import auth, health, repositories, reviews
 
 log = structlog.get_logger()
 
@@ -38,9 +38,12 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def error_envelope(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        extra: dict = {}
         if isinstance(exc.detail, dict):
             code = exc.detail.get("code", "error")
             message = exc.detail.get("message", "")
+            # e.g. review_already_exists carries the id of the review that won
+            extra = {k: v for k, v in exc.detail.items() if k not in ("code", "message")}
         else:
             code = HTTPStatus(exc.status_code).phrase.lower().replace(" ", "_")
             message = str(exc.detail)
@@ -50,6 +53,7 @@ def create_app() -> FastAPI:
                 "error": {
                     "code": code,
                     "message": message,
+                    **extra,
                     "request_id": getattr(request.state, "request_id", None),
                 }
             },
@@ -59,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(repositories.router)
+    app.include_router(reviews.router)
     return app
 
 

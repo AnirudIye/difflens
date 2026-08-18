@@ -73,28 +73,33 @@ def list_pull_requests(
     }
 
     # ponytail: rows for PRs that later close on GitHub keep their last synced state;
-    # the Day 5 worker refetches the PR before reviewing, so nothing acts on stale rows
+    # review creation refetches the PR before pinning, so nothing acts on stale rows
     rows: list[PullRequest] = []
     for item in payload:
         pull = existing.get(item["number"])
         if pull is None:
             pull = PullRequest(repository_id=repository.id, github_number=item["number"])
             db.add(pull)
-        pull.github_id = item["id"]
-        pull.title = item["title"]
-        pull.author_login = (item.get("user") or {}).get("login")
-        pull.state = item["state"]
-        pull.base_ref = item["base"]["ref"]
-        pull.head_ref = item["head"]["ref"]
-        pull.base_sha = item["base"]["sha"]
-        pull.head_sha = item["head"]["sha"]
-        pull.html_url = item["html_url"]
-        pull.github_updated_at = _github_time(item.get("updated_at"))
-        pull.updated_at = now
+        apply_pull_payload(pull, item, now)
         rows.append(pull)
 
     db.commit()
     return rows
+
+
+def apply_pull_payload(pull: PullRequest, item: dict, now: datetime) -> None:
+    """Copy one GitHub pull payload onto its row. Shared by sync and review creation."""
+    pull.github_id = item["id"]
+    pull.title = item["title"]
+    pull.author_login = (item.get("user") or {}).get("login")
+    pull.state = item["state"]
+    pull.base_ref = item["base"]["ref"]
+    pull.head_ref = item["head"]["ref"]
+    pull.base_sha = item["base"]["sha"]
+    pull.head_sha = item["head"]["sha"]
+    pull.html_url = item["html_url"]
+    pull.github_updated_at = _github_time(item.get("updated_at"))
+    pull.updated_at = now
 
 
 def _github_time(value: str | None) -> datetime | None:
