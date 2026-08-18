@@ -1,3 +1,5 @@
+import base64
+import binascii
 from typing import Any
 
 import httpx
@@ -77,3 +79,18 @@ class GitHubClient:
     def compare(self, full_name: str, base_sha: str, head_sha: str) -> dict[str, Any]:
         # files[] in this payload carries the per-file patch text the review worker consumes
         return self._get(f"/repos/{full_name}/compare/{base_sha}...{head_sha}")
+
+    def get_file_content(self, full_name: str, path: str, ref: str) -> bytes | None:
+        """One file's bytes at a pinned SHA, or None when GitHub will not inline it.
+
+        The contents API inlines base64 up to 1MB; beyond that it answers with
+        encoding "none" (and a directory answers with a list). Both mean the
+        workspace simply goes without this file.
+        """
+        payload = self._get(f"/repos/{full_name}/contents/{path}", params={"ref": ref})
+        if not isinstance(payload, dict) or payload.get("encoding") != "base64":
+            return None
+        try:
+            return base64.b64decode(payload["content"])
+        except (binascii.Error, ValueError):
+            return None
