@@ -1,6 +1,6 @@
 # Deployment
 
-Production topology: Next.js on Vercel, FastAPI on Render (free plan, Docker), Postgres on Neon. Redis (Upstash) arrives Day 5 and is not part of this runbook.
+Production topology: Next.js on Vercel, FastAPI plus the review worker in one container on Render (free plan, Docker), Postgres on Neon, Redis on Upstash (dispatch doorbell only; Postgres holds job state).
 
 Heads up before starting: steps 3 to 5 are circular. Render needs the Vercel URL (`FRONTEND_ORIGIN`), Vercel needs the Render URL (`API_ORIGIN`), and the GitHub OAuth app needs the Vercel URL for its callback. The order below untangles it: deploy Render first with a placeholder `FRONTEND_ORIGIN` (the Render URL is predictable from the service name), then Vercel, then fill in the real values and create the OAuth app last.
 
@@ -29,7 +29,7 @@ That full string is `DATABASE_URL` in step 2. Alembic runs inside the Render sta
    | `SESSION_SECRET` | generated fresh, first command below |
    | `TOKEN_ENCRYPTION_KEY` | generated fresh, second command below |
    | `FRONTEND_ORIGIN` | the Vercel URL (step 4): use `https://placeholder.invalid` for now |
-   | `REDIS_URL` | Upstash, Day 5: set `redis://placeholder:6379/0`, nothing reads it yet |
+   | `REDIS_URL` | Upstash `rediss://` string (step 6): `redis://placeholder:6379/0` until then; the worker then falls back to polling Postgres every 25s, so reviews still run |
 
 3. Generate fresh production secrets. Do **not** reuse the dev values from `.env`. From the repo root (PowerShell):
 
@@ -63,16 +63,26 @@ You do not know `<vercel-app>` until step 4, so set the callback after step 4 (i
 
 Back on Render, set `FRONTEND_ORIGIN` to the exact Vercel URL from step 4 (no trailing slash). The API uses it to build the OAuth `redirect_uri` and for cookie settings, so the placeholder value breaks login until this is done. Saving env vars triggers a redeploy. Then do step 3 for real if you deferred it.
 
-## 6. Verify
+## 6. Upstash (Redis)
+
+1. Create a database at console.upstash.com: free tier, name `difflens`, region matching Render (`us-west` for oregon), TLS on.
+2. Copy the `rediss://` connection string (the TLS scheme, with `default` as the user).
+3. Set it as `REDIS_URL` in the Render Environment tab, replacing the placeholder. Saving triggers a redeploy.
+
+Budget math, so nobody "optimizes" this later: the worker's idle cost is one BRPOP per 25s ≈ 3.5k commands/day against the 10k/day free limit. Sweeps and real reviews ride in the remaining headroom. If the limit is ever hit, Upstash rejects commands and the worker degrades to sweep-polling Postgres: reviews get slower, never lost.
+
+## 7. Verify
 
 - [ ] `https://difflens-api.onrender.com/health` returns 200 (first hit after idle takes 30-60s, see below)
 - [ ] The Vercel URL loads and Sign in with GitHub completes the OAuth round trip
 - [ ] The repository list loads after login
 - [ ] Neon dashboard > Tables shows the schema (users, repos, and the alembic_version row at the current head)
+- [ ] Render logs show `worker_started` after boot
+- [ ] POST a review (once the UI wires it, or via the API) and watch it go queued -> running -> completed in Neon's `review_jobs` table
 
-## 7. Free-tier facts
+## 8. Free-tier facts
 
 - Render free spins the service down after about 15 minutes idle. The next request eats a 30-60s cold start. Fine for a demo, just warm it up before showing anyone.
+- Spin-down also stops the worker (it shares the container). A review submitted while asleep waits for the next request to wake the service; the sweep then picks it up. A review interrupted by spin-down is recovered by the stale-heartbeat sweep on the next boot.
 - Migrations run on **every** deploy via `start.sh` (`alembic upgrade head` before uvicorn). Alembic no-ops when already at head, so this is cheap, but a broken migration blocks boot: that is the intended failure mode.
-- There is no worker yet. Reviews that need the async pipeline land Day 5, along with Upstash Redis and a real `REDIS_URL`.
 - Neon free tier suspends compute after idle too; the first query after suspend takes a few hundred ms extra. Nothing to do about it, just do not mistake it for a bug.

@@ -4,6 +4,7 @@ WORKDIR /srv
 
 COPY pyproject.toml ./
 COPY app ./app
+COPY worker ./worker
 
 RUN pip install --no-cache-dir .
 

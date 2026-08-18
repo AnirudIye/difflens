@@ -34,5 +34,5 @@ services:
         sync: false
       - key: FRONTEND_ORIGIN # the Vercel URL, e.g. https://difflens.vercel.app
         sync: false
-      - key: REDIS_URL # unused until Day 5
-        sync: false
+      - key: REDIS_URL # Upstash rediss:// string; with a bad value the worker
+        sync: false # degrades to polling Postgres every 25s instead of BRPOP

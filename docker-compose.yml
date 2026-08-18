@@ -47,8 +47,9 @@ services:
       redis:
         condition: service_healthy
 
-  # No worker service yet: the worker lands Day 5 and runs co-located with
-  # the API in production. No web service: Next.js runs natively / on Vercel.
+  # No worker service: locally the worker runs natively (run-worker.cmd) for
+  # fast reloads, and in production it rides inside the API container via
+  # start.sh. No web service: Next.js runs natively / on Vercel.
 
 volumes:
   pgdata:

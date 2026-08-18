@@ -35,7 +35,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "worker"]
 
 [tool.ruff]
 line-length = 100
@@ -56,7 +56,7 @@ known-third-party = ["alembic"]
 [tool.pyright]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
-include = ["app", "tests"]
+include = ["app", "tests", "worker"]
 exclude = ["tests/fixtures"]
 
 [tool.pytest.ini_options]
