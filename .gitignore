@@ -20,6 +20,9 @@ out/
 .env.*
 !.env.example
 
+# Session handoff doc stays local (machine-specific and operational detail)
+handoff.md
+
 # OS and editor cruft
 Thumbs.db
 .DS_Store
