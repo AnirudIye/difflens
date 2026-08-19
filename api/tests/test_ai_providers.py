@@ -159,7 +159,7 @@ def _gemini_payload(**overrides) -> dict:
 def _gemini_with_fake(handler) -> GeminiProvider:
     return GeminiProvider(
         api_key="g-test-key",
-        model="gemini-2.5-flash",
+        model="gemini-3.6-flash",
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
@@ -176,8 +176,8 @@ def test_gemini_request_shape():
     response = _gemini_with_fake(handler).review(REQUEST)
 
     assert response.refused is False
-    assert response.model == "gemini-2.5-flash"
-    assert "/v1beta/models/gemini-2.5-flash:generateContent" in seen["url"]
+    assert response.model == "gemini-3.6-flash"
+    assert "/v1beta/models/gemini-3.6-flash:generateContent" in seen["url"]
     # The key travels in a header, never in the URL where it could hit logs
     assert seen["headers"]["x-goog-api-key"] == "g-test-key"
     assert "key=" not in seen["url"]
@@ -298,7 +298,7 @@ def test_build_provider_applies_per_provider_default_models():
     assert isinstance(anthropic_provider, AnthropicProvider)
     assert anthropic_provider.model == "claude-opus-5"
     assert isinstance(gemini_provider, GeminiProvider)
-    assert gemini_provider.model == "gemini-2.5-flash"
+    assert gemini_provider.model == "gemini-3.6-flash"
     custom = build_provider("gemini", "g-x", "gemini-2.5-pro")
     assert isinstance(custom, GeminiProvider)
     assert custom.model == "gemini-2.5-pro"

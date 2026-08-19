@@ -7,7 +7,7 @@ import { ApiError, apiFetch, getMe } from "@/lib/api";
 import type { AIKeyStatus, Me } from "@/lib/types";
 
 const DEFAULT_MODELS: Record<"gemini" | "anthropic", string> = {
-  gemini: "gemini-2.5-flash",
+  gemini: "gemini-3.6-flash",
   anthropic: "claude-opus-5",
 };
 

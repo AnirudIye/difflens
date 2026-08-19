@@ -17,7 +17,7 @@ from app.security import decrypt_token
 
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.6-flash",
 }
 
 

@@ -618,7 +618,7 @@ def test_process_job_uses_the_review_authors_own_key(db, github, review_and_job,
     db.commit()
 
     def fake_review(self, request):
-        assert self.model == "gemini-2.5-flash"  # BYOK default model resolved
+        assert self.model == "gemini-3.6-flash"  # BYOK default model resolved
         return AIResponse(raw_text='{"findings": []}', refused=False, model=self.model)
 
     monkeypatch.setattr(GeminiProvider, "review", fake_review)
@@ -628,7 +628,7 @@ def test_process_job_uses_the_review_authors_own_key(db, github, review_and_job,
     assert outcome == "completed"
     db.refresh(review)
     assert review.pipeline_version.startswith("cheap ")
-    assert "ai=gemini-2.5-flash" in review.pipeline_version
+    assert "ai=gemini-3.6-flash" in review.pipeline_version
 
 
 def test_process_job_tells_the_user_when_their_key_is_unreadable(db, github, review_and_job):

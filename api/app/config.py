@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # off | mock | anthropic | gemini; mock runs the full AI pipeline at zero cost
     ai_provider: str = "mock"
-    # Empty means the provider's default model (claude-opus-5 / gemini-2.5-flash)
+    # Empty means the provider's default model (claude-opus-5 / gemini-3.6-flash)
     ai_model: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
