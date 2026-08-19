@@ -14,5 +14,10 @@ class Settings(BaseSettings):
     session_secret: str = "dev-session-secret-change-me"
     token_encryption_key: str = ""
 
+    # off | mock | anthropic; mock runs the full AI pipeline at zero cost
+    ai_provider: str = "mock"
+    ai_model: str = "claude-opus-5"
+    anthropic_api_key: str = ""
+
 
 settings = Settings()
