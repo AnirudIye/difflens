@@ -557,7 +557,9 @@ def test_process_job_retries_when_the_ai_provider_errors(db, github, review_and_
         def review(self, request):
             raise RuntimeError("anthropic is down")
 
-    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", DownProvider()))
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", DownProvider(), "server")
+    )
 
     outcome = runner.process_job(db, job.id, "w1")
 
@@ -584,7 +586,9 @@ def test_process_job_fails_permanently_on_anthropic_auth_error(
                 body=None,
             )
 
-    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", RevokedKeyProvider()))
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", RevokedKeyProvider(), "server")
+    )
 
     outcome = runner.process_job(db, job.id, "w1")
 
@@ -594,6 +598,87 @@ def test_process_job_fails_permanently_on_anthropic_auth_error(
     assert job.status == "failed"
     assert job.attempts == 1  # a revoked key burns no retries
     assert "misconfigured" in review.error_user_message.lower()
+
+
+def test_process_job_uses_the_review_authors_own_key(db, github, review_and_job, monkeypatch):
+    from app import security
+    from app.ai.gemini_provider import GeminiProvider
+    from app.analysis.ai_review import AIResponse
+    from app.models import UserAIKey
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+    db.add(
+        UserAIKey(
+            user_id=review.user_id,
+            provider="gemini",
+            key_enc=security.encrypt_token("AIzaFakeTestKey1234"),
+        )
+    )
+    db.commit()
+
+    def fake_review(self, request):
+        assert self.model == "gemini-2.5-flash"  # BYOK default model resolved
+        return AIResponse(raw_text='{"findings": []}', refused=False, model=self.model)
+
+    monkeypatch.setattr(GeminiProvider, "review", fake_review)
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    db.refresh(review)
+    assert review.pipeline_version.startswith("cheap ")
+    assert "ai=gemini-2.5-flash" in review.pipeline_version
+
+
+def test_process_job_tells_the_user_when_their_key_is_unreadable(db, github, review_and_job):
+    from app.models import UserAIKey
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+    # Stored under a rotated encryption key: only the user can fix this,
+    # by re-saving the key in Settings
+    db.add(UserAIKey(user_id=review.user_id, provider="gemini", key_enc="not-a-fernet-token"))
+    db.commit()
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.attempts == 1
+    assert "your ai api key" in review.error_user_message.lower()
+
+
+def test_process_job_blames_the_users_key_when_it_fails(db, github, review_and_job, monkeypatch):
+    from app import security
+    from app.ai.errors import AIProviderConfigError
+    from app.ai.gemini_provider import GeminiProvider
+    from app.models import UserAIKey
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+    db.add(
+        UserAIKey(
+            user_id=review.user_id,
+            provider="gemini",
+            key_enc=security.encrypt_token("AIzaRevokedKey5678"),
+        )
+    )
+    db.commit()
+
+    def failing_review(self, request):
+        raise AIProviderConfigError("Gemini rejected the request (401)")
+
+    monkeypatch.setattr(GeminiProvider, "review", failing_review)
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.attempts == 1  # no retries burned on a bad user key
+    assert "your ai api key" in review.error_user_message.lower()
 
 
 def test_process_job_persists_validated_ai_findings(db, github, review_and_job, monkeypatch):
@@ -627,7 +712,9 @@ def test_process_job_persists_validated_ai_findings(db, github, review_and_job, 
             },
         ]
     )
-    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", provider))
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", provider, "server")
+    )
 
     outcome = runner.process_job(db, job.id, "w1")
 

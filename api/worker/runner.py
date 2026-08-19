@@ -24,7 +24,8 @@ import structlog
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.ai.factory import provider_from_settings
+from app.ai.errors import AIProviderConfigError, UserAIKeyError
+from app.ai.factory import resolve_provider
 from app.analysis.models import ReviewJob as AnalysisJob
 from app.analysis.models import ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
@@ -49,10 +50,12 @@ log = structlog.get_logger()
 
 RECONNECT_MESSAGE = "GitHub access is missing or was revoked; reconnect and run again"
 AI_MISCONFIGURED_MESSAGE = "The AI reviewer is misconfigured; ask the operator to check settings"
+BYOK_MISCONFIGURED_MESSAGE = "Your AI API key failed; check it in Settings and run the review again"
 
-# Anthropic failures that no retry can fix: a bad key, a bad model id, or a
+# Provider failures that no retry can fix: a bad key, a bad model id, or a
 # request the API rejects outright
 AI_CONFIG_ERRORS = (
+    AIProviderConfigError,
     anthropic.AuthenticationError,
     anthropic.PermissionDeniedError,
     anthropic.NotFoundError,
@@ -239,15 +242,20 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
     review = db.get(Review, job.review_id)
     assert review is not None  # FK guarantees it; reviews are never hard-deleted
     log = structlog.get_logger().bind(job_id=str(job.id), review_id=str(review.id))
+    ai_source = "server"  # refined by resolve_provider below
 
     try:
         if outcome := _checkpoint(db, job, worker_id):
             return outcome
 
-        # Resolve the AI provider before spending any GitHub calls: a config
-        # error is permanent and burns no retries
+        # Resolve the AI provider before spending any GitHub calls: the
+        # review author's own key wins, then server config. A config error
+        # is permanent and burns no retries.
         try:
-            mode, ai_provider = provider_from_settings()
+            mode, ai_provider, ai_source = resolve_provider(db, review.user_id)
+        except UserAIKeyError as exc:
+            # Only the user can fix their unreadable key; say so
+            return _fail_or_lost(db, job, worker_id, BYOK_MISCONFIGURED_MESSAGE, str(exc))
         except ValueError as exc:
             return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
 
@@ -336,11 +344,11 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
         db.rollback()
         return _fail_or_lost(db, job, worker_id, BAD_DIFF_MESSAGE, str(exc))
     except AI_CONFIG_ERRORS as exc:
-        # A revoked key or bad model id fails every retry identically; stop now
+        # A revoked key or bad model id fails every retry identically; stop
+        # now, and blame the key's owner accurately
         db.rollback()
-        return _fail_or_lost(
-            db, job, worker_id, AI_MISCONFIGURED_MESSAGE, f"{type(exc).__name__}: {exc}"
-        )
+        message = BYOK_MISCONFIGURED_MESSAGE if ai_source == "user" else AI_MISCONFIGURED_MESSAGE
+        return _fail_or_lost(db, job, worker_id, message, f"{type(exc).__name__}: {exc}")
     except GitHubRateLimited as exc:
         db.rollback()
         delay = 60 if exc.reset_at is None else max(exc.reset_at - int(jobs._now().timestamp()), 1)
