@@ -1,0 +1,577 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import Header from "@/components/Header";
+import { ApiError, apiFetch, getMe } from "@/lib/api";
+import { relativeTime } from "@/lib/time";
+import type {
+  FeedbackVerdict,
+  Finding,
+  Me,
+  Review,
+  ReviewStatus,
+  Severity,
+} from "@/lib/types";
+
+const POLL_MS = 2500;
+// Render's free tier wakes in 30-60s; past ~2.5 minutes something is wrong
+const MAX_WAKE_POLLS = 60;
+
+const STATUS_LABEL: Record<ReviewStatus, string> = {
+  queued: "Queued",
+  running: "Analyzing",
+  completed: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+const SOURCE_LABEL: Record<Finding["source"], string> = {
+  deterministic: "analyzer",
+  ai: "ai",
+  hybrid: "analyzer + ai",
+};
+
+const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
+
+type LoadState =
+  | { kind: "loading" }
+  | { kind: "waking" }
+  | { kind: "ready"; review: Review }
+  | { kind: "error"; message: string };
+
+function isActive(status: ReviewStatus): boolean {
+  return status === "queued" || status === "running";
+}
+
+function lineRef(finding: Finding): string | null {
+  if (finding.start_line === null) {
+    return null;
+  }
+  if (finding.end_line === null || finding.end_line === finding.start_line) {
+    return `L${finding.start_line}`;
+  }
+  return `L${finding.start_line}-L${finding.end_line}`;
+}
+
+function groupByFile(findings: Finding[]): Array<[string, Finding[]]> {
+  const groups = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    const list = groups.get(finding.file_path);
+    if (list) {
+      list.push(finding);
+    } else {
+      groups.set(finding.file_path, [finding]);
+    }
+  }
+  return [...groups.entries()];
+}
+
+function severitySummary(review: Review): Array<[Severity, number]> {
+  const counts = review.severity_counts ?? {};
+  return SEVERITY_ORDER.flatMap((severity) => {
+    const count = counts[severity];
+    return count ? [[severity, count] as [Severity, number]] : [];
+  });
+}
+
+export default function ReviewPage() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const [me, setMe] = useState<Me | null>(null);
+  const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [stalled, setStalled] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelSent, setCancelSent] = useState(false);
+  const [busyFindings, setBusyFindings] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [note, setNote] = useState<string | null>(null);
+  const failedPolls = useRef(0);
+  const [pollEpoch, setPollEpoch] = useState(0);
+
+  useEffect(() => {
+    getMe()
+      .then(setMe)
+      .catch(() => setMe(null));
+  }, []);
+
+  // A stale server snapshot (late cancel response, reordered poll) must
+  // never overwrite a terminal state already on screen: findings and the
+  // feedback given on them would vanish with polling already stopped
+  const applyServerReview = useCallback((review: Review) => {
+    setState((prev) => {
+      if (
+        prev.kind === "ready" &&
+        prev.review.id === review.id &&
+        !isActive(prev.review.status)
+      ) {
+        return prev;
+      }
+      return { kind: "ready", review };
+    });
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    failedPolls.current = 0;
+    setStalled(false);
+    setState({ kind: "loading" });
+
+    async function poll() {
+      if (stopped) {
+        return;
+      }
+      let keepPolling = true;
+      try {
+        const review = await apiFetch<Review>(`/reviews/${params.id}`);
+        if (stopped) {
+          return;
+        }
+        failedPolls.current = 0;
+        setStalled(false);
+        applyServerReview(review);
+        keepPolling = isActive(review.status);
+      } catch (err) {
+        if (stopped) {
+          return;
+        }
+        if (err instanceof ApiError && err.status === 401) {
+          router.push("/login");
+          return;
+        }
+        if (err instanceof ApiError && err.status === 404) {
+          setState({
+            kind: "error",
+            message: "This review does not exist or belongs to another account.",
+          });
+          return;
+        }
+        if (
+          err instanceof ApiError &&
+          err.status < 500 &&
+          err.code !== "unknown_error"
+        ) {
+          // The envelope came from an awake API: retrying will not help
+          setState({ kind: "error", message: err.message });
+          return;
+        }
+        failedPolls.current += 1;
+        if (failedPolls.current > MAX_WAKE_POLLS) {
+          // Giving up must be visible: a banner over live data, or the
+          // error state when nothing has loaded yet
+          setStalled(true);
+          setState((prev) =>
+            prev.kind === "ready"
+              ? prev
+              : {
+                  kind: "error",
+                  message:
+                    "The review server did not answer. It may be down; try again in a minute.",
+                },
+          );
+          return;
+        }
+        setState((prev) => (prev.kind === "ready" ? prev : { kind: "waking" }));
+      }
+      if (keepPolling && !stopped) {
+        timer = window.setTimeout(() => void poll(), POLL_MS);
+      }
+    }
+
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [params.id, router, pollEpoch, applyServerReview]);
+
+  async function signOut() {
+    await apiFetch<undefined>("/auth/logout", { method: "POST" });
+    router.push("/login");
+  }
+
+  const mutateFinding = useCallback(
+    (findingId: string, verdict: FeedbackVerdict | null) => {
+      setState((prev) => {
+        if (prev.kind !== "ready") {
+          return prev;
+        }
+        return {
+          kind: "ready",
+          review: {
+            ...prev.review,
+            findings: prev.review.findings.map((finding) =>
+              finding.id === findingId
+                ? { ...finding, feedback: verdict }
+                : finding,
+            ),
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  async function giveFeedback(finding: Finding, verdict: FeedbackVerdict) {
+    if (busyFindings.has(finding.id)) {
+      return;
+    }
+    setBusyFindings((prev) => new Set(prev).add(finding.id));
+    const next = finding.feedback === verdict ? null : verdict;
+    const previous = finding.feedback;
+    mutateFinding(finding.id, next);
+    setNote(null);
+    try {
+      if (next === null) {
+        await apiFetch<{ verdict: null }>(`/findings/${finding.id}/feedback`, {
+          method: "DELETE",
+        });
+      } else {
+        await apiFetch<{ verdict: FeedbackVerdict }>(
+          `/findings/${finding.id}/feedback`,
+          { method: "PUT", body: JSON.stringify({ verdict: next }) },
+        );
+      }
+    } catch (err) {
+      mutateFinding(finding.id, previous);
+      if (err instanceof ApiError && err.status === 401) {
+        router.push("/login");
+        return;
+      }
+      setNote("Saving your feedback failed. Try again.");
+    } finally {
+      setBusyFindings((prev) => {
+        const remaining = new Set(prev);
+        remaining.delete(finding.id);
+        return remaining;
+      });
+    }
+  }
+
+  async function cancel(review: Review) {
+    setCancelBusy(true);
+    setNote(null);
+    try {
+      const updated = await apiFetch<Review>(`/reviews/${review.id}/cancel`, {
+        method: "POST",
+      });
+      // Sticky until a poll confirms: a racing stale poll must not
+      // re-enable the button mid-cancel
+      setCancelSent(true);
+      applyServerReview(updated);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!(err instanceof ApiError && err.code === "review_finished")) {
+        setNote("Cancelling failed. Try again.");
+      }
+      // review_finished: the next poll shows the final state
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
+  return (
+    <div className="shell">
+      <Header user={me} onSignOut={signOut} />
+      <main className="dash">
+        {state.kind === "loading" ? (
+          <p className="muted">Loading the review...</p>
+        ) : state.kind === "waking" ? (
+          <div className="status-line">
+            <span className="status-dot status-live" aria-hidden="true" />
+            <div>
+              <p>Waking the review server</p>
+              <p className="muted">
+                The free tier sleeps when idle. This can take up to a minute;
+                the page keeps trying on its own.
+              </p>
+            </div>
+          </div>
+        ) : state.kind === "error" ? (
+          <>
+            <p className="muted">{state.message}</p>
+            <div className="review-actions">
+              <button
+                className="button button-quiet"
+                type="button"
+                onClick={() => {
+                  setState({ kind: "loading" });
+                  setPollEpoch((epoch) => epoch + 1);
+                }}
+              >
+                Try again
+              </button>
+              <Link className="button button-quiet" href="/repositories">
+                All repositories
+              </Link>
+            </div>
+          </>
+        ) : (
+          <ReviewBody
+            review={state.review}
+            note={note}
+            stalled={stalled}
+            cancelBusy={cancelBusy}
+            cancelSent={cancelSent}
+            busyFindings={busyFindings}
+            onRetry={() => setPollEpoch((epoch) => epoch + 1)}
+            onCancel={() => void cancel(state.review)}
+            onFeedback={(finding, verdict) => void giveFeedback(finding, verdict)}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function ReviewBody({
+  review,
+  note,
+  stalled,
+  cancelBusy,
+  cancelSent,
+  busyFindings,
+  onRetry,
+  onCancel,
+  onFeedback,
+}: {
+  review: Review;
+  note: string | null;
+  stalled: boolean;
+  cancelBusy: boolean;
+  cancelSent: boolean;
+  busyFindings: ReadonlySet<string>;
+  onRetry: () => void;
+  onCancel: () => void;
+  onFeedback: (finding: Finding, verdict: FeedbackVerdict) => void;
+}) {
+  const pull = review.pull_request;
+  const active = isActive(review.status);
+  const cancelling = review.cancel_requested || cancelSent;
+  const groups = groupByFile(review.findings);
+  const counts = severitySummary(review);
+
+  return (
+    <>
+      <Link className="back-link" href={`/repositories/${pull.repository_id}`}>
+        &lsaquo; {pull.repository_full_name}
+      </Link>
+      <div className="page-head">
+        <h1 className="page-title">
+          Review of{" "}
+          {pull.html_url ? (
+            <a
+              className="pr-title"
+              href={pull.html_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span className="mono">#{pull.number}</span> {pull.title}
+            </a>
+          ) : (
+            <>
+              <span className="mono">#{pull.number}</span> {pull.title}
+            </>
+          )}
+        </h1>
+        {active ? (
+          <button
+            className="button button-quiet"
+            type="button"
+            disabled={cancelBusy || cancelling}
+            onClick={onCancel}
+          >
+            {cancelling ? "Cancelling..." : "Cancel review"}
+          </button>
+        ) : null}
+      </div>
+      <p className="review-meta">
+        <span className="mono">{review.head_sha.slice(0, 7)}</span>
+        {" against "}
+        <span className="mono">{review.base_sha.slice(0, 7)}</span>
+        {" - started "}
+        {relativeTime(review.created_at)}
+        {review.completed_at
+          ? ` - finished ${relativeTime(review.completed_at)}`
+          : ""}
+      </p>
+
+      <div className="status-line" role="status">
+        <span
+          className={`status-dot${active && !stalled ? " status-live" : ""}${
+            review.status === "failed" ? " status-bad" : ""
+          }${review.status === "completed" ? " status-done" : ""}`}
+          aria-hidden="true"
+        />
+        <span>{STATUS_LABEL[review.status]}</span>
+        {review.status === "queued" && !stalled ? (
+          <span className="muted">
+            waiting for a worker; a sleeping free tier can add a minute
+          </span>
+        ) : null}
+        {review.status === "running" && !stalled ? (
+          <span className="muted">checking the diff line by line</span>
+        ) : null}
+      </div>
+
+      {stalled ? (
+        <div className="notice" role="alert">
+          <p>
+            Lost contact with the review server. The review may still be
+            running; this page has stopped watching it.
+          </p>
+          <button className="button button-quiet" type="button" onClick={onRetry}>
+            Reconnect
+          </button>
+        </div>
+      ) : null}
+
+      {note ? (
+        <p className="muted run-note" role="alert">
+          {note}
+        </p>
+      ) : null}
+
+      {review.status === "failed" ? (
+        <div className="notice">
+          <p>
+            {review.error_user_message ??
+              "This review failed before it could finish."}
+          </p>
+          <Link className="button" href={`/repositories/${pull.repository_id}`}>
+            Back to pull requests
+          </Link>
+        </div>
+      ) : null}
+
+      {review.status === "cancelled" ? (
+        <p className="muted">
+          This review was cancelled before it finished. Run it again from the
+          pull request list whenever you like.
+        </p>
+      ) : null}
+
+      {review.status === "completed" ? (
+        <>
+          {review.summary ? (
+            <p className="review-summary">{review.summary}</p>
+          ) : null}
+          {counts.length > 0 ? (
+            <div className="severity-row">
+              {counts.map(([severity, count]) => (
+                <span key={severity} className={`chip sev-${severity}`}>
+                  {count} {severity}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {review.findings.length === 0 ? (
+            <div className="clean-state">
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 18 18"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 9.5 7 13.5 15 4.5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <p>No findings. This diff came back clean.</p>
+            </div>
+          ) : (
+            groups.map(([filePath, findings]) => (
+              <section className="file-group" key={filePath}>
+                <h2 className="file-head">
+                  <span className="mono">{filePath}</span>
+                  <span className="muted">
+                    {findings.length}{" "}
+                    {findings.length === 1 ? "finding" : "findings"}
+                  </span>
+                </h2>
+                <ul className="finding-list">
+                  {findings.map((finding) => (
+                    <FindingCard
+                      key={finding.id}
+                      finding={finding}
+                      busy={busyFindings.has(finding.id)}
+                      onFeedback={onFeedback}
+                    />
+                  ))}
+                </ul>
+              </section>
+            ))
+          )}
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function FindingCard({
+  finding,
+  busy,
+  onFeedback,
+}: {
+  finding: Finding;
+  busy: boolean;
+  onFeedback: (finding: Finding, verdict: FeedbackVerdict) => void;
+}) {
+  const lines = lineRef(finding);
+  return (
+    <li className="finding">
+      <div className="finding-head">
+        <span className={`chip sev-${finding.severity}`}>
+          {finding.severity}
+        </span>
+        <span className="chip">{finding.category}</span>
+        {finding.confidence ? (
+          <span className="chip">{finding.confidence} confidence</span>
+        ) : null}
+        <span className="chip">{SOURCE_LABEL[finding.source]}</span>
+        {lines ? <span className="mono finding-lines">{lines}</span> : null}
+      </div>
+      <p className="finding-title">{finding.title}</p>
+      {finding.explanation && finding.explanation !== finding.title ? (
+        <p className="finding-body">{finding.explanation}</p>
+      ) : null}
+      {finding.recommendation ? (
+        <p className="finding-body finding-rec">
+          <span className="rec-label">Fix</span>
+          {finding.recommendation}
+        </p>
+      ) : null}
+      <div className="feedback-row">
+        <button
+          className="button button-quiet"
+          type="button"
+          disabled={busy}
+          aria-pressed={finding.feedback === "useful"}
+          onClick={() => onFeedback(finding, "useful")}
+        >
+          Useful
+        </button>
+        <button
+          className="button button-quiet"
+          type="button"
+          disabled={busy}
+          aria-pressed={finding.feedback === "not_useful"}
+          onClick={() => onFeedback(finding, "not_useful")}
+        >
+          Not useful
+        </button>
+      </div>
+    </li>
+  );
+}
