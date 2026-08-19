@@ -79,6 +79,28 @@ class ProviderConnection(Base):
     updated_at: Mapped[datetime] = created_now()
 
 
+class UserAIKey(Base):
+    """One bring-your-own AI key per user, encrypted at rest like GitHub tokens.
+
+    Reviews triggered by this user run on their key instead of the server's
+    provider. The plaintext key is never stored or returned; only a hint.
+    """
+
+    __tablename__ = "user_ai_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_ai_keys_user_id"),
+        CheckConstraint("provider IN ('anthropic', 'gemini')", name="ck_user_ai_keys_provider"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str]
+    key_enc: Mapped[str]
+    model: Mapped[str | None]
+    created_at: Mapped[datetime] = created_now()
+    updated_at: Mapped[datetime] = created_now()
+
+
 class Repository(Base):
     __tablename__ = "repositories"
     __table_args__ = (
