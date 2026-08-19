@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app import queue
 from app.deps import CurrentUser, DbSession, GitHubDep
-from app.models import Finding, PullRequest, Repository, Review, User, UserRepository
+from app.models import Feedback, Finding, PullRequest, Repository, Review, User, UserRepository
 from app.routers.github_errors import github_failure, not_found
 from app.services import review_service
 from app.services.github_client import GitHubError
@@ -22,7 +22,7 @@ class CreateReviewRequest(BaseModel):
     pull_request_id: UUID
 
 
-def _finding_item(finding: Finding) -> dict[str, Any]:
+def _finding_item(finding: Finding, verdict: str | None) -> dict[str, Any]:
     return {
         "id": str(finding.id),
         "file_path": finding.file_path,
@@ -36,13 +36,32 @@ def _finding_item(finding: Finding) -> dict[str, Any]:
         "title": finding.title,
         "explanation": finding.explanation,
         "recommendation": finding.recommendation,
+        "feedback": verdict,
     }
 
 
-def _review_item(review: Review, cancel_requested: bool, findings: list[Finding]) -> dict[str, Any]:
+def _pull_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
+    return {
+        "id": str(pull.id),
+        "number": pull.github_number,
+        "title": pull.title,
+        "html_url": pull.html_url,
+        "repository_id": str(repository.id),
+        "repository_full_name": repository.full_name,
+    }
+
+
+def _review_item(
+    review: Review,
+    cancel_requested: bool,
+    findings: list[Finding],
+    verdicts: dict[UUID, str],
+    pull_context: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "id": str(review.id),
         "pull_request_id": str(review.pull_request_id),
+        "pull_request": pull_context,
         "status": review.status,
         "head_sha": review.head_sha,
         "base_sha": review.base_sha,
@@ -54,7 +73,7 @@ def _review_item(review: Review, cancel_requested: bool, findings: list[Finding]
         "started_at": review.started_at,
         "completed_at": review.completed_at,
         "cancel_requested": cancel_requested,
-        "findings": [_finding_item(finding) for finding in findings],
+        "findings": [_finding_item(finding, verdicts.get(finding.id)) for finding in findings],
     }
 
 
@@ -81,6 +100,28 @@ def _review_findings(db: Session, review: Review) -> list[Finding]:
 def _cancel_requested(db: Session, review: Review) -> bool:
     job = review_service.latest_job(db, review)
     return job.cancel_requested if job else False
+
+
+def _feedback_verdicts(db: Session, user: User, findings: list[Finding]) -> dict[UUID, str]:
+    if not findings:
+        return {}
+    rows = db.execute(
+        select(Feedback.finding_id, Feedback.verdict).where(
+            Feedback.user_id == user.id,
+            Feedback.finding_id.in_([finding.id for finding in findings]),
+        )
+    )
+    return {finding_id: verdict for finding_id, verdict in rows}
+
+
+def _load_pull_context(db: Session, review: Review) -> dict[str, Any]:
+    # The review's FK cascades from pull_requests, so the row must exist
+    pull, repository = db.execute(
+        select(PullRequest, Repository)
+        .join(Repository, Repository.id == PullRequest.repository_id)
+        .where(PullRequest.id == review.pull_request_id)
+    ).one()
+    return _pull_context(pull, repository)
 
 
 @router.post("", status_code=201)
@@ -121,13 +162,26 @@ def create_review(
     # After commit so a lost doorbell can only delay the job, never orphan it;
     # the worker's sweep re-rings for anything queued and unheard
     queue.notify(queue.get_redis(), job.id)
-    return _review_item(review, cancel_requested=False, findings=[])
+    return _review_item(
+        review,
+        cancel_requested=False,
+        findings=[],
+        verdicts={},
+        pull_context=_pull_context(pull, repository),
+    )
 
 
 @router.get("/{review_id}")
 def get_review(review_id: UUID, user: CurrentUser, db: DbSession) -> dict[str, Any]:
     review = _load_owned_review(db, user, review_id)
-    return _review_item(review, _cancel_requested(db, review), _review_findings(db, review))
+    findings = _review_findings(db, review)
+    return _review_item(
+        review,
+        _cancel_requested(db, review),
+        findings,
+        _feedback_verdicts(db, user, findings),
+        _load_pull_context(db, review),
+    )
 
 
 @router.post("/{review_id}/cancel")
@@ -140,4 +194,11 @@ def cancel_review(review_id: UUID, user: CurrentUser, db: DbSession) -> dict[str
             status_code=409,
             detail={"code": "review_finished", "message": "This review has already finished"},
         ) from None
-    return _review_item(review, _cancel_requested(db, review), _review_findings(db, review))
+    findings = _review_findings(db, review)
+    return _review_item(
+        review,
+        _cancel_requested(db, review),
+        findings,
+        _feedback_verdicts(db, user, findings),
+        _load_pull_context(db, review),
+    )

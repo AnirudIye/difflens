@@ -69,6 +69,20 @@ def test_create_pins_refetched_snapshot_and_enqueues(client, db, github, synced_
     assert pr.head_sha == moved_head
 
 
+def test_create_response_carries_pull_context(client, synced_pr, doorbell):
+    """The review page renders its header from this block; dropping it from
+    the create response would blank the page the user lands on."""
+    _user, pr = synced_pr
+    body = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    pull = body["pull_request"]
+    assert pull["id"] == str(pr.id)
+    assert pull["number"] == 41
+    assert pull["title"] == "Add login form"
+    assert pull["repository_full_name"] == "octocat/alpha"
+    assert uuid.UUID(pull["repository_id"])
+    assert body["findings"] == []
+
+
 def test_duplicate_live_review_conflicts(client, db, synced_pr, github, doorbell):
     _user, pr = synced_pr
     first = client.post("/reviews", json={"pull_request_id": str(pr.id)})
