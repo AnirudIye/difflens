@@ -36,3 +36,9 @@ services:
         sync: false
       - key: REDIS_URL # Upstash rediss:// string; with a bad value the worker
         sync: false # degrades to polling Postgres every 25s instead of BRPOP
+      - key: AI_PROVIDER # "mock" until ANTHROPIC_API_KEY is set, then "anthropic"
+        value: mock
+      - key: AI_MODEL
+        value: claude-opus-5
+      - key: ANTHROPIC_API_KEY # console.anthropic.com; only read when AI_PROVIDER=anthropic
+        sync: false
