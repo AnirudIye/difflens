@@ -11,7 +11,9 @@ import httpx
 import pytest
 
 from app.ai.anthropic_provider import AnthropicProvider
-from app.ai.factory import provider_from_settings
+from app.ai.errors import AIProviderConfigError
+from app.ai.factory import build_provider, provider_from_settings
+from app.ai.gemini_provider import GeminiProvider
 from app.ai.mock import MockProvider
 from app.analysis.ai_review import FINDINGS_SCHEMA, AIRequest
 
@@ -139,7 +141,167 @@ def test_anthropic_maps_refusal():
     assert response.raw_text == ""
 
 
+# --- gemini ---
+
+
+def _gemini_payload(**overrides) -> dict:
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": json.dumps({"findings": []})}]},
+                "finishReason": "STOP",
+            }
+        ]
+    }
+    return {**payload, **overrides}
+
+
+def _gemini_with_fake(handler) -> GeminiProvider:
+    return GeminiProvider(
+        api_key="g-test-key",
+        model="gemini-2.5-flash",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_gemini_request_shape():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["headers"] = request.headers
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_gemini_payload())
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+
+    assert response.refused is False
+    assert response.model == "gemini-2.5-flash"
+    assert "/v1beta/models/gemini-2.5-flash:generateContent" in seen["url"]
+    # The key travels in a header, never in the URL where it could hit logs
+    assert seen["headers"]["x-goog-api-key"] == "g-test-key"
+    assert "key=" not in seen["url"]
+    body = seen["body"]
+    assert body["system_instruction"]["parts"] == [{"text": REQUEST.system}]
+    assert body["contents"] == [{"role": "user", "parts": [{"text": REQUEST.user}]}]
+    config = body["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseJsonSchema"] == FINDINGS_SCHEMA
+    assert config["maxOutputTokens"] > 0
+
+
+def test_gemini_joins_text_parts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_gemini_payload(
+                candidates=[
+                    {
+                        "content": {"parts": [{"text": '{"find'}, {"text": 'ings": []}'}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            ),
+        )
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+    assert response.raw_text == '{"findings": []}'
+
+
+def test_gemini_maps_blocked_prompt_to_refusal():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"promptFeedback": {"blockReason": "SAFETY"}, "candidates": []}
+        )
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+    assert response.refused is True
+    assert response.raw_text == ""
+
+
+def test_gemini_maps_safety_stop_to_refusal():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_gemini_payload(candidates=[{"content": {"parts": []}, "finishReason": "SAFETY"}]),
+        )
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+    assert response.refused is True
+
+
+def test_gemini_marks_truncated_output():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_gemini_payload(
+                candidates=[
+                    {"content": {"parts": [{"text": '{"findi'}]}, "finishReason": "MAX_TOKENS"}
+                ]
+            ),
+        )
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+    assert response.truncated is True
+    assert response.raw_text == '{"findi'
+
+
+def test_gemini_empty_candidates_degrade_to_unparseable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candidates": []})
+
+    response = _gemini_with_fake(handler).review(REQUEST)
+    assert response.refused is False
+    assert response.raw_text == ""  # parse_candidates(None) upstream counts it
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_gemini_config_errors_are_permanent(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": {"message": "bad key or model"}})
+
+    with pytest.raises(AIProviderConfigError):
+        _gemini_with_fake(handler).review(REQUEST)
+
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_gemini_rate_limit_and_server_errors_stay_transient(status):
+    # 429 is the dominant failure mode on the free tier: it must reach the
+    # retry path, never the permanent blame-the-key path
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": {"message": "boom"}})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _gemini_with_fake(handler).review(REQUEST)
+
+
 # --- factory ---
+
+
+def test_factory_gemini_requires_key(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "gemini")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        provider_from_settings()
+
+    monkeypatch.setattr(settings, "gemini_api_key", "g-key")
+    mode, provider = provider_from_settings()
+    assert mode == "cheap"
+    assert isinstance(provider, GeminiProvider)
+
+
+def test_build_provider_applies_per_provider_default_models():
+    anthropic_provider = build_provider("anthropic", "sk-ant-x", None)
+    gemini_provider = build_provider("gemini", "g-x", None)
+    assert isinstance(anthropic_provider, AnthropicProvider)
+    assert anthropic_provider.model == "claude-opus-5"
+    assert isinstance(gemini_provider, GeminiProvider)
+    assert gemini_provider.model == "gemini-2.5-flash"
+    custom = build_provider("gemini", "g-x", "gemini-2.5-pro")
+    assert isinstance(custom, GeminiProvider)
+    assert custom.model == "gemini-2.5-pro"
 
 
 def test_factory_off_means_deterministic_only(monkeypatch):

@@ -22,12 +22,12 @@ MAX_OUTPUT_TOKENS = 16000
 
 class AnthropicProvider:
     def __init__(self, api_key: str, model: str, http_client: httpx.Client | None = None) -> None:
-        self._model = model
+        self.model = model
         self._client = Anthropic(api_key=api_key, http_client=http_client)
 
     def review(self, request: AIRequest) -> AIResponse:
         response = self._client.beta.messages.create(
-            model=self._model,
+            model=self.model,
             max_tokens=MAX_OUTPUT_TOKENS,
             system=request.system,
             messages=[{"role": "user", "content": request.user}],
