@@ -30,9 +30,10 @@ That full string is `DATABASE_URL` in step 2. Alembic runs inside the Render sta
    | `TOKEN_ENCRYPTION_KEY` | generated fresh, second command below |
    | `FRONTEND_ORIGIN` | the Vercel URL (step 4): use `https://placeholder.invalid` for now |
    | `REDIS_URL` | Upstash `rediss://` string (step 6): `redis://placeholder:6379/0` until then; the worker then falls back to polling Postgres every 25s, so reviews still run |
-   | `ANTHROPIC_API_KEY` | console.anthropic.com > API keys. Only read when `AI_PROVIDER=anthropic`; leave empty while `AI_PROVIDER=mock` |
+   | `GEMINI_API_KEY` | aistudio.google.com/apikey (free tier). Only read when `AI_PROVIDER=gemini` |
+   | `ANTHROPIC_API_KEY` | console.anthropic.com > API keys. Only read when `AI_PROVIDER=anthropic` |
 
-   `AI_PROVIDER` and `AI_MODEL` ship in render.yaml with visible values (`mock`, `claude-opus-5`). Mock mode runs the whole AI pipeline with zero API calls and zero AI findings, so the platform works end to end before any key exists. To turn on real reviews: set `ANTHROPIC_API_KEY`, flip `AI_PROVIDER` to `anthropic`, save (triggers a redeploy). Cost control lives in `AI_MODEL`: `claude-opus-5` is $5/$25 per 1M tokens; `claude-sonnet-5` and `claude-haiku-4-5` are cheaper tiers.
+   `AI_PROVIDER` and `AI_MODEL` ship in render.yaml with visible values (`mock`, empty). Mock mode runs the whole AI pipeline with zero API calls and zero AI findings, so the platform works end to end before any key exists. The zero-cost way to real reviews: create a free key at aistudio.google.com/apikey, set `GEMINI_API_KEY`, flip `AI_PROVIDER` to `gemini`, save (redeploys). The paid alternative is `anthropic` + `ANTHROPIC_API_KEY` (claude-opus-5 runs $5/$25 per 1M tokens). `AI_MODEL` left empty means the provider default (`gemini-2.5-flash` / `claude-opus-5`). Independently of all this, signed-in users can store their own key under Settings in the web app; reviews they start use their key instead of the server's, encrypted at rest with `TOKEN_ENCRYPTION_KEY`.
 
 3. Generate fresh production secrets. Do **not** reuse the dev values from `.env`. From the repo root (PowerShell):
 

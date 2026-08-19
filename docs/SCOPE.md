@@ -12,7 +12,8 @@ Ship a working, deployed AI code review platform for public GitHub pull requests
 - Repository and pull request picker
 - Async review pipeline, diff fetched pinned to immutable base/head SHAs
 - Deterministic analyzers: ruff, detect-secrets, missing-tests heuristic (ESLint as stretch)
-- AI reviewer: Anthropic Claude behind a provider abstraction with a mock mode
+- AI reviewer behind a provider abstraction with a mock mode: Gemini (free tier) or Anthropic Claude
+- Bring-your-own AI key: per-user encrypted key in Settings, wins over the server's provider (owner amendment, added Day 6)
 - Validation of every AI-cited file/line against the reviewed snapshot; hallucinated locations discarded
 - Dedupe via content-based fingerprints
 - Findings persisted with severity, category, confidence, source, recommendation
@@ -25,7 +26,7 @@ Ship a working, deployed AI code review platform for public GitHub pull requests
 - Posting comments back to GitHub: requires write access, contradicts the read-only stance.
 - Executing repository code: reviews are static only; running untrusted code is a different product with a different threat model.
 - Languages beyond Python and TS/JS: every language multiplies analyzer work, and two are enough to prove the design.
-- Multi-provider AI: the abstraction exists, but shipping a second provider adds test surface with zero demo value.
+- ~~Multi-provider AI: the abstraction exists, but shipping a second provider adds test surface with zero demo value.~~ Overturned by the owner on Day 6: Gemini shipped as the free-tier default path, and users can bring their own Gemini or Anthropic key. The change policy below still stands for everything else.
 
 ## The 10-day gates
 

@@ -36,9 +36,11 @@ services:
         sync: false
       - key: REDIS_URL # Upstash rediss:// string; with a bad value the worker
         sync: false # degrades to polling Postgres every 25s instead of BRPOP
-      - key: AI_PROVIDER # "mock" until ANTHROPIC_API_KEY is set, then "anthropic"
-        value: mock
-      - key: AI_MODEL
-        value: claude-opus-5
+      - key: AI_PROVIDER # mock | gemini | anthropic; gemini + a free AI Studio key
+        value: mock # is the zero-cost way to run real reviews
+      - key: AI_MODEL # empty = provider default (gemini-2.5-flash / claude-opus-5)
+        value: ""
+      - key: GEMINI_API_KEY # aistudio.google.com/apikey; only read when AI_PROVIDER=gemini
+        sync: false
       - key: ANTHROPIC_API_KEY # console.anthropic.com; only read when AI_PROVIDER=anthropic
         sync: false

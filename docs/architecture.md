@@ -35,7 +35,8 @@ Non-functional:
   +--------------------------------+
           |                |
           v                v
-     GitHub API      Anthropic API (Claude; mock provider by default)
+     GitHub API      AI provider (Gemini or Anthropic behind one abstraction;
+                     mock by default; a user's own key from Settings wins)
 ```
 
 ## Data flow for one review
@@ -85,6 +86,7 @@ Why not Celery or arq: both treat the broker as the truth and both hold connecti
 | Empty OAuth scope, public read only | No private repos in v1 | The alternative (`repo` scope) grants write access; wrong posture, and a GitHub App is post-sprint |
 | Polling UI, not websockets | Findings appear seconds late | Free tiers and a 10-day budget; polling is stateless and debuggable |
 | Mock AI provider as the default | Real reviews need a flag flip and a key | CI and local dev run free, offline, and deterministic |
+| Per-user AI keys (encrypted rows, not a vault) | Key rotation invalidates stored keys; users re-save | Fernet at rest with the existing TOKEN_ENCRYPTION_KEY, no new infrastructure at $0 |
 
 ## What we would revisit at scale
 
