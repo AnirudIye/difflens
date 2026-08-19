@@ -28,6 +28,14 @@ export type PullRequest = {
   github_updated_at: string;
 };
 
+export type AIKeyStatus = {
+  configured: boolean;
+  provider: "anthropic" | "gemini" | null;
+  model: string | null;
+  key_hint: string | null;
+  key_invalid: boolean;
+};
+
 export type ApiErrorPayload = {
   code: string;
   message: string;

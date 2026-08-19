@@ -28,6 +28,9 @@ export default function Header({
             height={24}
           />
           <span className="session-login">{user.login}</span>
+          <Link className="button button-quiet" href="/settings">
+            Settings
+          </Link>
           <button className="button button-quiet" type="button" onClick={onSignOut}>
             Sign out
           </button>
