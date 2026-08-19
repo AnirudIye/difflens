@@ -51,6 +51,14 @@ class ReviewStats(BaseModel):
     findings_after_dedup: int = 0
     truncated: bool = False
     tool_versions: dict[str, str] = {}
+    # AI stage; all zero-valued when the mode is deterministic_only
+    ai_model: str | None = None
+    ai_refused: bool = False
+    ai_parse_failed: bool = False
+    ai_truncated: bool = False
+    ai_skipped: str | None = None  # e.g. "diff_too_large"
+    ai_candidates: int = 0
+    ai_discarded: dict[str, int] = {}
 
 
 class ReviewResult(BaseModel):

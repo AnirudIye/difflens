@@ -1,20 +1,31 @@
-"""Runs a ReviewJob through the parse, analyze, dedup, and summarize stages."""
+"""Runs a ReviewJob through the parse, analyze, AI, dedup, and summarize stages."""
 
 import importlib.metadata
 import platform
+import secrets
 import subprocess
 import sys
 import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
+from app.analysis.ai_review import (
+    FINDINGS_SCHEMA,
+    MAX_DIFF_CHARS,
+    AIProvider,
+    AIRequest,
+    build_prompt,
+    parse_candidates,
+    validate_candidates,
+)
 from app.analysis.analyzers.base import run_analyzers
 from app.analysis.analyzers.ruff_adapter import RuffAnalyzer
 from app.analysis.analyzers.secrets_adapter import SecretsAnalyzer
 from app.analysis.analyzers.test_detector import TestDetector
 from app.analysis.dedup import dedupe
-from app.analysis.diffs.parser import build_diff_index
+from app.analysis.diffs.parser import DiffIndex, build_diff_index
 from app.analysis.models import Finding, ReviewJob, ReviewResult, ReviewStats
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
@@ -65,9 +76,55 @@ def _tool_versions() -> dict[str, str]:
     }
 
 
-def run_review(job: ReviewJob) -> ReviewResult:
-    if job.mode != "deterministic_only":
-        raise NotImplementedError("AI layer arrives Day 6")
+def _run_ai_stage(
+    job: ReviewJob,
+    provider: AIProvider,
+    index: DiffIndex,
+    workspace: Path,
+    stats: ReviewStats,
+) -> list[Finding]:
+    """One provider call, then the hallucination chain over its output."""
+    if len(job.diff_text) > MAX_DIFF_CHARS:
+        # An unbounded diff means an unbounded prompt and an unbounded bill;
+        # skip honestly and say so rather than truncating silently
+        stats.ai_skipped = "diff_too_large"
+        return []
+    nonce = secrets.token_hex(8)
+    system, user = build_prompt(job, nonce)
+    response = provider.review(AIRequest(system=system, user=user, output_schema=FINDINGS_SCHEMA))
+    stats.ai_model = response.model
+    stats.ai_truncated = response.truncated
+    if response.refused:
+        stats.ai_refused = True
+        return []
+    candidates = parse_candidates(response.raw_text)
+    if candidates is None:
+        stats.ai_parse_failed = True
+        return []
+    stats.ai_candidates = len(candidates)
+    findings, stats.ai_discarded = validate_candidates(candidates, index, workspace)
+    return findings
+
+
+def _ai_note(stats: ReviewStats) -> str | None:
+    """One honest sentence when the AI stage degraded; the user must be able
+    to tell a clean AI pass from a suppressed one."""
+    if stats.ai_skipped == "diff_too_large":
+        return "This diff is too large for the AI reviewer; only deterministic checks ran."
+    if stats.ai_refused:
+        return "The AI reviewer declined this diff; only deterministic checks ran."
+    if stats.ai_parse_failed and stats.ai_truncated:
+        return "The AI reviewer's output was cut short and unusable; only deterministic checks ran."
+    if stats.ai_parse_failed:
+        return "The AI reviewer's output was unusable; only deterministic checks ran."
+    if stats.ai_truncated:
+        return "The AI reviewer's output was cut short; its findings may be incomplete."
+    return None
+
+
+def run_review(job: ReviewJob, provider: AIProvider | None = None) -> ReviewResult:
+    if job.mode != "deterministic_only" and provider is None:
+        raise ValueError(f"mode {job.mode!r} requires an AI provider")
 
     stats = ReviewStats()
 
@@ -82,6 +139,10 @@ def run_review(job: ReviewJob) -> ReviewResult:
         findings, stats.analyzers_run, stats.analyzers_skipped = run_analyzers(
             analyzers, job.workspace, index
         )
+
+    if job.mode != "deterministic_only" and provider is not None:
+        with _timed(stats, "ai"):
+            findings.extend(_run_ai_stage(job, provider, index, job.workspace, stats))
     stats.findings_before_dedup = len(findings)
 
     with _timed(stats, "dedup"):
@@ -90,6 +151,12 @@ def run_review(job: ReviewJob) -> ReviewResult:
 
     with _timed(stats, "summarize"):
         summary = _summarize(findings)
+        if job.mode != "deterministic_only":
+            note = _ai_note(stats)
+            if note:
+                summary = f"{summary} {note}"
 
     stats.tool_versions = _tool_versions()
+    if stats.ai_model:
+        stats.tool_versions["ai"] = stats.ai_model
     return ReviewResult(summary=summary, findings=findings, stats=stats)

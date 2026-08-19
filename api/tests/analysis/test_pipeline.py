@@ -102,8 +102,8 @@ def test_malformed_diff_raises_analysis_error():
 
 
 @pytest.mark.parametrize("mode", ["cheap", "demo"])
-def test_ai_modes_are_day_six(mode):
-    with pytest.raises(NotImplementedError, match="AI layer arrives Day 6"):
+def test_ai_modes_require_a_provider(mode):
+    with pytest.raises(ValueError, match="provider"):
         run_review(make_job("clean", mode=mode))
 
 
