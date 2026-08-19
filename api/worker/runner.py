@@ -19,10 +19,12 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
+import anthropic
 import structlog
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.ai.factory import provider_from_settings
 from app.analysis.models import ReviewJob as AnalysisJob
 from app.analysis.models import ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
@@ -46,9 +48,19 @@ from worker import jobs
 log = structlog.get_logger()
 
 RECONNECT_MESSAGE = "GitHub access is missing or was revoked; reconnect and run again"
+AI_MISCONFIGURED_MESSAGE = "The AI reviewer is misconfigured; ask the operator to check settings"
+
+# Anthropic failures that no retry can fix: a bad key, a bad model id, or a
+# request the API rejects outright
+AI_CONFIG_ERRORS = (
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    anthropic.NotFoundError,
+    anthropic.BadRequestError,
+)
 SNAPSHOT_GONE_MESSAGE = "The reviewed commits are no longer reachable on GitHub"
 BAD_DIFF_MESSAGE = "GitHub returned a diff this pipeline could not parse"
-TRANSIENT_MESSAGE = "GitHub did not respond; the review will retry shortly"
+TRANSIENT_MESSAGE = "The review hit a temporary problem; it will retry shortly"
 EXHAUSTED_MESSAGE = "The review kept failing and was stopped; run it again to retry"
 TOO_MANY_FILES_MESSAGE = (
     "This pull request changes too many files to review (GitHub caps the comparison at 300 files)"
@@ -119,7 +131,7 @@ def populate_workspace(
 
 
 def _persist_success(
-    db: Session, job: ReviewJob, review: Review, result: ReviewResult, worker_id: str
+    db: Session, job: ReviewJob, review: Review, result: ReviewResult, worker_id: str, mode: str
 ) -> bool:
     """Persist findings and the terminal transition, fenced on ownership.
 
@@ -160,9 +172,21 @@ def _persist_success(
                 recommendation=finding.recommendation,
             )
         )
-    versions = result.stats.tool_versions
-    pipeline_version = "deterministic_only " + " ".join(
-        f"{tool}={version}" for tool, version in sorted(versions.items())
+    stats = result.stats
+    markers = [
+        marker
+        for flag, marker in (
+            (stats.ai_refused, "ai_refused"),
+            (stats.ai_parse_failed, "ai_parse_failed"),
+            (stats.ai_truncated, "ai_truncated"),
+            (stats.ai_skipped, f"ai_skipped={stats.ai_skipped}"),
+        )
+        if flag
+    ]
+    pipeline_version = " ".join(
+        [mode]
+        + [f"{tool}={version}" for tool, version in sorted(stats.tool_versions.items())]
+        + markers
     )
     db.execute(
         update(Review)
@@ -220,6 +244,13 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
         if outcome := _checkpoint(db, job, worker_id):
             return outcome
 
+        # Resolve the AI provider before spending any GitHub calls: a config
+        # error is permanent and burns no retries
+        try:
+            mode, ai_provider = provider_from_settings()
+        except ValueError as exc:
+            return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
+
         pull = db.get(PullRequest, review.pull_request_id)
         assert pull is not None
         repository = db.get(Repository, pull.repository_id)
@@ -264,11 +295,23 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                         head_sha=review.head_sha,
                         diff_text=diff_text,
                         workspace=workspace,
-                        mode="deterministic_only",
-                    )
+                        mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
+                    ),
+                    provider=ai_provider,
                 )
 
-        if not _persist_success(db, job, review, result, worker_id):
+        stats = result.stats
+        if stats.ai_refused or stats.ai_parse_failed or stats.ai_truncated or stats.ai_skipped:
+            # An attacker-authored diff can suppress the AI stage; make sure
+            # that never happens silently
+            log.warning(
+                "ai_stage_degraded",
+                refused=stats.ai_refused,
+                parse_failed=stats.ai_parse_failed,
+                truncated=stats.ai_truncated,
+                skipped=stats.ai_skipped,
+            )
+        if not _persist_success(db, job, review, result, worker_id, mode):
             log.warning("review_result_discarded_ownership_lost")
             return "lost"
         log.info("review_completed", findings=len(result.findings))
@@ -292,6 +335,12 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
     except AnalysisError as exc:
         db.rollback()
         return _fail_or_lost(db, job, worker_id, BAD_DIFF_MESSAGE, str(exc))
+    except AI_CONFIG_ERRORS as exc:
+        # A revoked key or bad model id fails every retry identically; stop now
+        db.rollback()
+        return _fail_or_lost(
+            db, job, worker_id, AI_MISCONFIGURED_MESSAGE, f"{type(exc).__name__}: {exc}"
+        )
     except GitHubRateLimited as exc:
         db.rollback()
         delay = 60 if exc.reset_at is None else max(exc.reset_at - int(jobs._now().timestamp()), 1)

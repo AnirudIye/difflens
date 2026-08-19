@@ -534,6 +534,128 @@ def test_process_job_completes_clean_fixture_with_zero_findings(db, github, revi
     assert list(db.execute(select(Finding)).scalars()) == []
 
 
+def test_process_job_records_the_ai_provider_in_pipeline_version(db, github, review_and_job):
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    db.refresh(review)
+    # Default config is the mock provider: full AI pipeline, zero cost.
+    # The recorded mode must match how the review actually ran.
+    assert review.pipeline_version.startswith("cheap ")
+    assert "ai=mock" in review.pipeline_version
+    assert "deterministic_only" not in review.pipeline_version
+
+
+def test_process_job_retries_when_the_ai_provider_errors(db, github, review_and_job, monkeypatch):
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+
+    class DownProvider:
+        def review(self, request):
+            raise RuntimeError("anthropic is down")
+
+    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", DownProvider()))
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "retried"
+    db.refresh(job)
+    assert job.status == "queued"
+    assert job.attempts == 1
+    assert "RuntimeError" in job.error_detail
+
+
+def test_process_job_fails_permanently_on_anthropic_auth_error(
+    db, github, review_and_job, monkeypatch
+):
+    import anthropic
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+
+    class RevokedKeyProvider:
+        def review(self, request):
+            raise anthropic.AuthenticationError(
+                "invalid x-api-key",
+                response=httpx.Response(401, request=httpx.Request("POST", "https://x")),
+                body=None,
+            )
+
+    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", RevokedKeyProvider()))
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "failed"
+    assert job.attempts == 1  # a revoked key burns no retries
+    assert "misconfigured" in review.error_user_message.lower()
+
+
+def test_process_job_persists_validated_ai_findings(db, github, review_and_job, monkeypatch):
+    from app.ai.mock import MockProvider
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+    provider = MockProvider(
+        candidates=[
+            {
+                "file_path": "app/report.py",
+                "start_line": 15,
+                "end_line": 15,
+                "severity": "medium",
+                "category": "performance",
+                "confidence": "medium",
+                "title": "Query string rebuilt on every call",
+                "explanation": None,
+                "recommendation": None,
+            },
+            {  # hallucinated: must never reach the database
+                "file_path": "app/invented.py",
+                "start_line": 1,
+                "end_line": 1,
+                "severity": "high",
+                "category": "security",
+                "confidence": "high",
+                "title": "Fabricated",
+                "explanation": None,
+                "recommendation": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runner, "provider_from_settings", lambda: ("cheap", provider))
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    rows = list(db.execute(select(Finding)).scalars())
+    ai_rows = [row for row in rows if row.source == "ai"]
+    assert len(ai_rows) == 1
+    assert ai_rows[0].title == "Query string rebuilt on every call"
+    assert not any(row.file_path == "app/invented.py" for row in rows)
+
+
+def test_process_job_fails_fast_on_ai_misconfiguration(db, github, review_and_job, monkeypatch):
+    from app.config import settings
+
+    review, job = review_and_job
+    monkeypatch.setattr(settings, "ai_provider", "anthropic")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "failed"
+    assert job.attempts == 1  # config errors burn no retries
+    assert "ANTHROPIC_API_KEY" in job.error_detail
+
+
 def test_process_job_refuses_workspace_escape(db, github, review_and_job):
     review, job = review_and_job
     payload = wire_fixture(github, "python_buggy")
