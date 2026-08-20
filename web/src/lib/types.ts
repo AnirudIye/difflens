@@ -68,6 +68,9 @@ export type Review = {
   id: string;
   pull_request_id: string;
   pull_request: ReviewPullRequest;
+  // null means no AI ran; "mock" means the offline stub did, which is not a
+  // real review. Neither is a clean AI pass.
+  ai_model: string | null;
   status: ReviewStatus;
   head_sha: string;
   base_sha: string;

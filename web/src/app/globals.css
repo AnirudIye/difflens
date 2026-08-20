@@ -473,6 +473,11 @@ body {
   white-space: pre-line;
 }
 
+.ai-notice {
+  max-width: 36rem;
+  margin-bottom: 1.5rem;
+}
+
 .severity-row {
   display: flex;
   flex-wrap: wrap;

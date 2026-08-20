@@ -45,6 +45,12 @@ function isActive(status: ReviewStatus): boolean {
   return status === "queued" || status === "running";
 }
 
+// The mock provider answers with no findings and no error, so a review it
+// produced is indistinguishable from a clean AI pass unless we say so
+function hasRealAI(review: Review): boolean {
+  return review.ai_model !== null && review.ai_model !== "mock";
+}
+
 function lineRef(finding: Finding): string | null {
   if (finding.start_line === null) {
     return null;
@@ -400,6 +406,12 @@ function ReviewBody({
         {review.completed_at
           ? ` - finished ${relativeTime(review.completed_at)}`
           : ""}
+        {hasRealAI(review) ? (
+          <>
+            {" - reviewed by "}
+            <span className="mono">{review.ai_model}</span>
+          </>
+        ) : null}
       </p>
 
       <div className="status-line" role="status">
@@ -461,6 +473,18 @@ function ReviewBody({
         <>
           {review.summary ? (
             <p className="review-summary">{review.summary}</p>
+          ) : null}
+          {!hasRealAI(review) ? (
+            <div className="notice ai-notice" role="status">
+              <p>
+                No AI reviewer ran, so these findings come from the
+                deterministic analyzers alone. Logic bugs with no lint
+                signature would not appear here.
+              </p>
+              <Link className="button button-quiet" href="/settings">
+                Add your API key
+              </Link>
+            </div>
           ) : null}
           {counts.length > 0 ? (
             <div className="severity-row">
