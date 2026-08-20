@@ -15,6 +15,15 @@ node_modules/
 .next/
 out/
 
+# Playwright: browsers, traces, and the reports of a failed run
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Server logs written by the CI e2e job
+*.log
+
 # Environment files (.env.example is the committed template)
 .env
 .env.*

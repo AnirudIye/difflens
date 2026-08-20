@@ -91,6 +91,109 @@ jobs:
           docker run --rm difflens-api:ci python -c "import app.main; print('app imports')"
           docker run --rm difflens-api:ci sh -c "test -f alembic.ini && test -d alembic && echo 'migrations present'"
 
+  e2e:
+    # One browser test, on the demo path only. Never the OAuth path: that
+    # would need real GitHub credentials in CI, and a test that signs in to a
+    # third party fails for reasons that are not about this code.
+    #
+    # This is the only job that runs the whole product at once (Postgres,
+    # Redis, API, worker, Next) and drives it the way a visitor does. It
+    # exists because every other job checks a layer: nothing else would
+    # notice if the layers stopped fitting together.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: difflens
+          POSTGRES_PASSWORD: difflens
+          POSTGRES_DB: difflens
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgresql+psycopg://difflens:difflens@localhost:5432/difflens
+      REDIS_URL: redis://localhost:6379/0
+      DEMO_MODE: "1"
+      SESSION_SECRET: ci-session-secret
+      TOKEN_ENCRYPTION_KEY: ci-token-encryption-key
+      GITHUB_CLIENT_ID: ci-client-id
+      API_ORIGIN: http://127.0.0.1:8000
+      E2E_BASE_URL: http://127.0.0.1:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The demo's TypeScript findings come from the ESLint analyzer, and the
+      # test asserts on them, so the runtime has to be here as well.
+      - name: Install the ESLint analyzer runtime
+        run: npm ci --omit=dev --no-audit --no-fund
+        working-directory: api/eslint-runtime
+      - run: uv sync
+        working-directory: api
+      - name: Migrate and seed the demo
+        working-directory: api
+        run: |
+          uv run alembic upgrade head
+          uv run python -m app.demo.seed
+      - name: Start the API and the worker
+        working-directory: api
+        run: |
+          # nohup and a log file, so the processes outlive this step's shell
+          # and a crash leaves evidence instead of a bare timeout
+          nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+            > api.log 2>&1 &
+          PYTHONPATH=. nohup uv run python -m worker > worker.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "api up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "api did not come up"; cat api.log worker.log; exit 1
+      - name: Build and start the web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          nohup npx next start -p 3000 > web.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3000/demo > /dev/null; then
+              echo "web up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "web did not come up"; cat web.log; exit 1
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run e2e
+        working-directory: web
+      - name: Server logs when the test fails
+        if: failure()
+        run: |
+          echo "--- api ---"; cat api/api.log || true
+          echo "--- worker ---"; cat api/worker.log || true
+          echo "--- web ---"; cat web/web.log || true
+      - name: Upload the trace when it fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace
+          path: web/test-results/
+          retention-days: 7
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
