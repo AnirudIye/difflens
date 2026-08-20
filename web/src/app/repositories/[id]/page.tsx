@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { ApiError, apiFetch, getMe } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
-import type { Me, PullRequest, Review } from "@/lib/types";
+import type { PullRequest, Review } from "@/lib/types";
+import { useMe } from "@/lib/useMe";
 
 type LoadState =
   | { kind: "loading" }
@@ -17,7 +18,7 @@ type LoadState =
 export default function RepositoryPullsPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const [me, setMe] = useState<Me | null>(null);
+  const me = useMe();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [startingId, setStartingId] = useState<string | null>(null);
   const [runNote, setRunNote] = useState<string | null>(null);
@@ -59,9 +60,6 @@ export default function RepositoryPullsPage() {
   }, [params.id, router]);
 
   useEffect(() => {
-    getMe()
-      .then(setMe)
-      .catch(() => setMe(null));
     void load();
   }, [load]);
 
@@ -126,7 +124,7 @@ export default function RepositoryPullsPage() {
 
   return (
     <div className="shell">
-      <Header user={me} onSignOut={signOut} />
+      <Header me={me} onSignOut={signOut} />
       <main className="dash">
         <Link className="back-link" href="/repositories">
           &lsaquo; All repositories

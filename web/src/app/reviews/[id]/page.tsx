@@ -4,16 +4,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { ApiError, apiFetch, getMe } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
 import type {
   FeedbackVerdict,
   Finding,
-  Me,
   Review,
   ReviewStatus,
   Severity,
 } from "@/lib/types";
+import { useMe } from "@/lib/useMe";
 
 const POLL_MS = 2500;
 // Render's free tier wakes in 30-60s; past ~2.5 minutes something is wrong
@@ -86,7 +86,7 @@ function severitySummary(review: Review): Array<[Severity, number]> {
 export default function ReviewPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const [me, setMe] = useState<Me | null>(null);
+  const me = useMe();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [stalled, setStalled] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -98,12 +98,6 @@ export default function ReviewPage() {
   const [note, setNote] = useState<string | null>(null);
   const failedPolls = useRef(0);
   const [pollEpoch, setPollEpoch] = useState(0);
-
-  useEffect(() => {
-    getMe()
-      .then(setMe)
-      .catch(() => setMe(null));
-  }, []);
 
   // A stale server snapshot (late cancel response, reordered poll) must
   // never overwrite a terminal state already on screen: findings and the
@@ -322,7 +316,7 @@ export default function ReviewPage() {
 
   return (
     <div className="shell">
-      <Header user={me} onSignOut={signOut} />
+      <Header me={me} onSignOut={signOut} />
       <main className="dash">
         {state.kind === "loading" ? (
           <p className="muted">Loading the review...</p>

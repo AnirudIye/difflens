@@ -1,23 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { apiFetch, getMe } from "@/lib/api";
-import type { Me } from "@/lib/types";
+import { apiFetch } from "@/lib/api";
+import { useMe } from "@/lib/useMe";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    getMe()
-      .then(setMe)
-      .catch(() => setMe(null))
-      .finally(() => setLoading(false));
-  }, []);
+  const me = useMe();
 
   async function signOut() {
     await apiFetch<undefined>("/auth/logout", { method: "POST" });
@@ -26,26 +17,42 @@ export default function DashboardPage() {
 
   return (
     <div className="shell">
-      <Header user={me} onSignOut={signOut} />
+      <Header me={me} onSignOut={signOut} />
       <main className="dash">
-        {loading ? (
+        {me.kind === "loading" ? (
           <p className="muted">Checking your session...</p>
-        ) : me ? (
+        ) : me.kind === "authed" ? (
           <>
             <p className="signed-in">
               {/* eslint-disable-next-line @next/next/no-img-element -- avatars come from GitHub's CDN, no image loader configured */}
               <img
                 className="avatar"
-                src={me.avatar_url}
+                src={me.me.avatar_url}
                 alt=""
                 width={40}
                 height={40}
               />
-              Signed in as {me.login}
+              Signed in as {me.me.login}
             </p>
             <Link className="button" href="/repositories">
               Browse your repositories
             </Link>
+          </>
+        ) : me.kind === "unreachable" ? (
+          <>
+            <p className="muted">
+              Cannot reach the review server right now, so your account details
+              are missing. The free tier sleeps when idle; this page keeps
+              retrying. Everything below still works.
+            </p>
+            <div className="review-actions">
+              <Link className="button" href="/repositories">
+                Browse your repositories
+              </Link>
+              <Link className="button button-quiet" href="/settings">
+                Settings
+              </Link>
+            </div>
           </>
         ) : (
           <p className="muted">

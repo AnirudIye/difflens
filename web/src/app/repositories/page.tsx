@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { ApiError, apiFetch, getMe } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
-import type { Me, Repository } from "@/lib/types";
+import type { Repository } from "@/lib/types";
+import { useMe } from "@/lib/useMe";
 
 type LoadState =
   | { kind: "loading" }
@@ -16,7 +17,7 @@ type LoadState =
 
 export default function RepositoriesPage() {
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
+  const me = useMe();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   const load = useCallback(async () => {
@@ -56,9 +57,6 @@ export default function RepositoriesPage() {
   }, [router]);
 
   useEffect(() => {
-    getMe()
-      .then(setMe)
-      .catch(() => setMe(null));
     void load();
   }, [load]);
 
@@ -69,7 +67,7 @@ export default function RepositoriesPage() {
 
   return (
     <div className="shell">
-      <Header user={me} onSignOut={signOut} />
+      <Header me={me} onSignOut={signOut} />
       <main className="dash">
         <div className="page-head">
           <h1 className="page-title">Repositories</h1>

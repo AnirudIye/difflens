@@ -3,8 +3,9 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { ApiError, apiFetch, getMe } from "@/lib/api";
-import type { AIKeyStatus, Me } from "@/lib/types";
+import { ApiError, apiFetch } from "@/lib/api";
+import type { AIKeyStatus } from "@/lib/types";
+import { useMe } from "@/lib/useMe";
 
 const DEFAULT_MODELS: Record<"gemini" | "anthropic", string> = {
   gemini: "gemini-3.6-flash",
@@ -13,7 +14,7 @@ const DEFAULT_MODELS: Record<"gemini" | "anthropic", string> = {
 
 export default function SettingsPage() {
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
+  const me = useMe();
   const [status, setStatus] = useState<AIKeyStatus | null>(null);
   const [provider, setProvider] = useState<"gemini" | "anthropic">("gemini");
   const [apiKey, setApiKey] = useState("");
@@ -39,9 +40,6 @@ export default function SettingsPage() {
   }, [router]);
 
   useEffect(() => {
-    getMe()
-      .then(setMe)
-      .catch(() => setMe(null));
     void load();
   }, [load]);
 
@@ -96,7 +94,7 @@ export default function SettingsPage() {
 
   return (
     <div className="shell">
-      <Header user={me} onSignOut={signOut} />
+      <Header me={me} onSignOut={signOut} />
       <main className="dash">
         <div className="page-head">
           <h1 className="page-title">Settings</h1>
