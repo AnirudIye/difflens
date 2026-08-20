@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
+from unidiff import PatchSet
 
 from app import security
 from app.db import get_db
@@ -38,6 +39,7 @@ from app.main import app
 from app.models import ProviderConnection, User
 
 API_DIR = Path(__file__).resolve().parents[1]
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _create_test_database_if_missing() -> None:
@@ -216,3 +218,33 @@ def make_user_with_session(db, client):
         return user, token
 
     return _make
+
+
+def compare_payload(diff_text: str) -> dict:
+    """Shape one fixture diff the way GitHub's compare endpoint would."""
+    files = []
+    for patched in PatchSet(diff_text):
+        source = (patched.source_file or "")[2:]
+        target = (patched.target_file or "")[2:]
+        if patched.is_added_file:
+            status, filename = "added", target
+        elif patched.is_removed_file:
+            status, filename = "removed", source
+        else:
+            status, filename = "modified", target
+        patch = "".join(str(hunk) for hunk in patched).rstrip("\n")
+        files.append({"filename": filename, "status": status, "patch": patch})
+    return {"status": "ahead", "files": files}
+
+
+def wire_fixture(github, name: str) -> dict:
+    """Point the fake compare and contents endpoints at one golden fixture."""
+    root = FIXTURES / name
+    diff_text = (root / "pr.diff").read_text()
+    payload = compare_payload(diff_text)
+    github.compares[("octocat/alpha", BASE_SHA, HEAD_SHA_41)] = payload
+    for file in (root / "files").rglob("*"):
+        if file.is_file():
+            rel = file.relative_to(root / "files").as_posix()
+            github.contents[(rel, HEAD_SHA_41)] = file.read_bytes()
+    return payload

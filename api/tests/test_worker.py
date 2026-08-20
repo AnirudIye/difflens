@@ -13,11 +13,10 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import select
-from unidiff import PatchSet
 
 from app import queue
 from app.models import Finding, ProviderConnection, Review, ReviewJob
-from tests.conftest import BASE_SHA, HEAD_SHA_41
+from tests.conftest import BASE_SHA, HEAD_SHA_41, wire_fixture
 from worker import jobs, runner
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -50,36 +49,6 @@ def review_and_job(client, db, github, make_user_with_session):
 
 def _ago(seconds: float) -> datetime:
     return datetime.now(UTC) - timedelta(seconds=seconds)
-
-
-def compare_payload(diff_text: str) -> dict:
-    """Shape one fixture diff the way GitHub's compare endpoint would."""
-    files = []
-    for patched in PatchSet(diff_text):
-        source = (patched.source_file or "")[2:]
-        target = (patched.target_file or "")[2:]
-        if patched.is_added_file:
-            status, filename = "added", target
-        elif patched.is_removed_file:
-            status, filename = "removed", source
-        else:
-            status, filename = "modified", target
-        patch = "".join(str(hunk) for hunk in patched).rstrip("\n")
-        files.append({"filename": filename, "status": status, "patch": patch})
-    return {"status": "ahead", "files": files}
-
-
-def wire_fixture(github, name: str) -> dict:
-    """Point the fake compare and contents endpoints at one golden fixture."""
-    root = FIXTURES / name
-    diff_text = (root / "pr.diff").read_text()
-    payload = compare_payload(diff_text)
-    github.compares[("octocat/alpha", BASE_SHA, HEAD_SHA_41)] = payload
-    for file in (root / "files").rglob("*"):
-        if file.is_file():
-            rel = file.relative_to(root / "files").as_posix()
-            github.contents[(rel, HEAD_SHA_41)] = file.read_bytes()
-    return payload
 
 
 # --- claim ---
