@@ -44,7 +44,16 @@ def cap(message: str, limit: int = MAX_VALIDATION_MESSAGE_CHARS) -> str:
 
 def create_app() -> FastAPI:
     setup_logging(settings.environment)
-    app = FastAPI(title="DiffLens API")
+    production = settings.environment == "production"
+    app = FastAPI(
+        title="DiffLens API",
+        # The schema is a map of every route and payload shape. It is a
+        # development convenience, not part of the product, and a public
+        # deployment has no reason to publish one.
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
@@ -62,6 +71,9 @@ def create_app() -> FastAPI:
             duration_ms=round((time.perf_counter() - start) * 1000, 2),
         )
         response.headers["X-Request-ID"] = request_id
+        # Every response here is JSON. Saying so stops a browser guessing
+        # otherwise for a payload that contains attacker-authored PR text.
+        response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
     @app.exception_handler(RequestValidationError)
