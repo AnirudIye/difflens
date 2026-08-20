@@ -5,6 +5,7 @@
 Functional:
 
 - Sign in with GitHub OAuth (read-only, public repos)
+- Show a complete review to a visitor with no account at all (the public demo)
 - List repositories and open PRs, pick one, run a review
 - Fetch the diff pinned to immutable base/head SHAs
 - Run deterministic analyzers and an AI reviewer asynchronously
@@ -52,14 +53,25 @@ Non-functional:
 9. Findings from all sources are fingerprinted on content, deduped, and persisted.
 10. The job transitions to `completed` (or `failed` with error detail, or `cancelled` if the user asked it to stop). The UI, polling review status, renders the findings.
 
+## The public demo
+
+`/demo` shows a finished review to a visitor with no account, and lets them run it again. It is the same pipeline, not a recording of one: steps 2, 3, 4, 6, 8, 9, and 10 above are byte for byte the code a signed-in review runs.
+
+Only two things differ, and both are decided in one branch in `worker/runner.py` that is entered before the GitHub token is ever looked up:
+
+- **Step 5 does not happen.** The diff and the file contents come from `app/demo/sample/`, which ships in the image because the Dockerfile copies `app/`. (`api/tests/` does not ship, which is why the demo sample could not simply reuse the regression fixtures.) The diff is synthesized from those files at load time rather than stored beside them, so there is only one copy of the content and no way for the two to drift.
+- **Step 7 replays a recorded response** instead of calling a provider, so a demo run costs nothing however often the button is pressed. The recorded candidates still go through step 8's validation chain, so three of them merge with analyzer findings into `hybrid` results through production code rather than being labelled that way.
+
+The demo user holds no `provider_connections` row, so the demo path has no token to misuse even if that branch were somehow entered wrongly. Scope is a column: `repositories.is_demo`, with a partial unique index permitting exactly one demo repository, and the public routes query from it rather than from an id in the URL. Concurrency needs no new machinery either: `uq_reviews_pr_sha_live` already permits one live review per (pull request, head sha), and the demo is one pull request at one commit, so anonymous visitors cannot produce more than one demo job at a time no matter how the rate limiter behaves.
+
 ## Storage
 
 Postgres on Neon. One line per table:
 
-- `users`: GitHub identity, one row per person
+- `users`: GitHub identity, one row per person (including the demo user, at the reserved `github_id` 0)
 - `sessions`: server-side session store backing the auth cookie
 - `provider_connections`: encrypted OAuth tokens, per user per provider
-- `repositories`: GitHub repos seen so far, deduped by GitHub id
+- `repositories`: GitHub repos seen so far, deduped by GitHub id; `is_demo` marks the one the public demo reviews
 - `user_repositories`: which user can see which repo
 - `pull_requests`: PR metadata per repository
 - `reviews`: one review of one PR at one head SHA

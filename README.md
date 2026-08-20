@@ -4,6 +4,8 @@
 
 DiffLens is an AI code review platform for GitHub pull requests. It pairs deterministic static analysis (ruff, ESLint, detect-secrets, a missing-tests heuristic) with an AI reviewer behind a provider abstraction (Gemini, Anthropic, or OpenAI, plus a mock that needs no key), then verifies every file and line the AI cites against the exact commit it reviewed, so hallucinated findings never reach you. Sign in with GitHub OAuth (read-only, public repos), pick a pull request, and an async pipeline built on FastAPI and Next.js fetches the diff, runs the analyzers, dedupes the results, and renders findings with severity, category, confidence, and a concrete recommendation.
 
+**[See a review without signing in](https://difflens-zeta.vercel.app/demo)** - one pull request with deliberate bugs in it, reviewed by the real pipeline. No account, no API key. The free tier sleeps, so give the first request up to a minute.
+
 ## What it does
 
 - Signs in with GitHub OAuth using a deliberately empty scope: read-only, public repos only. DiffLens never asks for write access.
@@ -14,6 +16,7 @@ DiffLens is an AI code review platform for GitHub pull requests. It pairs determ
 - Treats PR content as untrusted input to the AI reviewer; prompt-injection defense is part of the pipeline design, not a patch.
 - Dedupes findings across analyzers and the AI with content-based fingerprints.
 - Persists each finding with severity, category, confidence, source, and recommendation, and lets you mark findings as helpful or wrong.
+- Runs a public demo at `/demo` that a visitor with no account can read and re-run. It goes through the same queue, worker, analyzers, and validation chain as any other review; only the diff source and the AI response are bundled, so it costs nothing per run.
 
 ## Architecture
 
@@ -34,7 +37,7 @@ Everything runs on free tiers: Vercel for the Next.js 15 frontend, Render for th
 
 ## Status
 
-Day 8 of a 10-day build. Live at https://difflens-zeta.vercel.app
+Day 9 of a 10-day build. Live at https://difflens-zeta.vercel.app
 
 - [x] Day 1: repo scaffold, CI, scope and architecture docs
 - [x] Day 2: database schema and GitHub OAuth
@@ -44,7 +47,7 @@ Day 8 of a 10-day build. Live at https://difflens-zeta.vercel.app
 - [x] Day 6: AI review layer
 - [x] Day 7: review UI
 - [x] Day 8: tests, security pass, threat model
-- [ ] Day 9: demo mode and hardening
+- [x] Day 9: demo mode and hardening
 - [ ] Day 10: portfolio polish
 
 ## Local development
@@ -79,7 +82,16 @@ npm install
 npm run dev
 ```
 
-Or skip the terminals: `run-api.cmd` and `run-web.cmd` at the repo root launch each half in its own window (the API one uses the venv at `api\.venv`, so run `uv sync` once first).
+Run the worker in a third terminal, or reviews queue and never start:
+
+```
+cd api
+uv run python -m worker
+```
+
+Or skip the terminals: `run-api.cmd`, `run-worker.cmd`, and `run-web.cmd` at the repo root launch each part in its own window (they use the venv at `api\.venv`, so run `uv sync` once first).
+
+To see the demo locally, set `DEMO_MODE=1` in `.env`, seed it once with `uv run python -m app.demo.seed` from `api/`, and open http://localhost:3000/demo.
 
 The databases live in Docker; the API and web app run natively for fast reloads. Postgres publishes on host port 55432 (not 5432) so it never collides with a locally installed PostgreSQL. `docker compose --profile full up -d` additionally builds and runs the API in a container if you want to exercise that path.
 

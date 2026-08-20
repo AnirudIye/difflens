@@ -37,8 +37,21 @@ That full string is `DATABASE_URL` in step 2. Alembic runs inside the Render sta
    | `AI_MODEL` | leave empty for the provider default |
    | `REVIEW_RATE_LIMIT` | optional; reviews one account may start per window (default 20). `0` disables |
    | `REVIEW_RATE_LIMIT_WINDOW_S` | optional; the window in seconds (default 3600) |
+   | `DEMO_MODE` | optional; `1` enables the public demo at `/demo`. Unset or `0` means the demo routes answer 404 |
+   | `DEMO_RATE_LIMIT` | optional; demo reruns one address may start per window (default 5). `0` disables |
+   | `DEMO_RATE_LIMIT_WINDOW_S` | optional; the window in seconds (default 3600) |
 
    `AI_PROVIDER` and `AI_MODEL` are declared `sync: false` in render.yaml and are unset by default, so the Environment tab is the only place they are set. That is deliberate: an env var given a literal `value:` in a blueprint is blueprint-managed, and it silently overwrites the dashboard on every deploy. Production once ran a full day with no AI at all because of it. Unset behaves exactly like `mock`, because `config.py` defaults to it. Mock mode runs the whole AI pipeline with zero API calls and zero AI findings, so the platform works end to end before any key exists. The zero-cost way to real reviews: create a free key at aistudio.google.com/apikey, set `GEMINI_API_KEY`, flip `AI_PROVIDER` to `gemini`, save (redeploys). The paid alternatives are `anthropic` + `ANTHROPIC_API_KEY` (claude-opus-5, $5/$25 per 1M tokens) and `openai` + `OPENAI_API_KEY` (gpt-5.6-terra, $1/$6 per 1M; gpt-5.6-luna is cheaper still and gpt-5.6-sol stronger). `AI_MODEL` left empty means the provider default (`gemini-3.6-flash` / `claude-opus-5` / `gpt-5.6-terra`). Independently of all this, signed-in users can store their own key under Settings in the web app; reviews they start use their key instead of the server's, encrypted at rest with `TOKEN_ENCRYPTION_KEY`.
+
+   With `DEMO_MODE=1`, `start.sh` also runs `python -m app.demo.seed` after the
+   migrations. That is idempotent: it creates the demo user, repository, and
+   pull request if they are missing, enqueues one review, and does nothing at
+   all on every later boot. It is deliberately non-fatal, so a seeding problem
+   cannot stop the API from booting; if the demo is missing in production,
+   look for `demo seed failed` in the Render logs. The demo needs no GitHub
+   token and no AI key: its diff is bundled in the image at
+   `app/demo/sample/`, and its AI half replays a recorded response, so it
+   costs nothing per run however often visitors press the button.
 
 3. Generate fresh production secrets. Do **not** reuse the dev values from `.env`. From the repo root (PowerShell):
 
@@ -80,18 +93,39 @@ Back on Render, set `FRONTEND_ORIGIN` to the exact Vercel URL from step 4 (no tr
 
 Budget math, so nobody "optimizes" this later: the worker's idle cost is one BRPOP per 25s ≈ 3.5k commands/day against the 10k/day free limit. Sweeps and real reviews ride in the remaining headroom. If the limit is ever hit, Upstash rejects commands and the worker degrades to sweep-polling Postgres: reviews get slower, never lost.
 
-## 7. Verify
+## 7. Keep-warm cron (optional, recommended if the demo is on)
+
+`.github/workflows/keep-warm.yml` pings `/health` every 10 minutes so the
+demo does not open with a cold start. It is off until you give it a target:
+
+1. Repository Settings > Secrets and variables > Actions > Variables > New.
+2. Name `API_ORIGIN`, value `https://difflens-api.onrender.com` (no trailing
+   slash, no path).
+
+Without the variable the job exits 0 and says it has nothing to ping, so a
+fork does not get failing scheduled runs. Measured 2026-08-20: a cold
+`/health` took **32s**, which is most of the 60s the demo is meant to load
+in, so this is the difference between a demo that looks instant and one that
+looks broken. Render's free tier allows 750 instance-hours a month and one
+always-on service fits inside that. Note what this does not do: it keeps
+Render awake, and with it the worker's Redis connection, but Neon still
+autosuspends and wakes in about a second, which is invisible by comparison.
+
+## 8. Verify
 
 - [ ] `https://difflens-api.onrender.com/health` returns 200 (first hit after idle takes 30-60s, see below)
 - [ ] The Vercel URL loads and Sign in with GitHub completes the OAuth round trip
 - [ ] The repository list loads after login
 - [ ] Neon dashboard > Tables shows the schema (users, repos, and the alembic_version row at the current head)
 - [ ] Render logs show `worker_started` after boot
-- [ ] POST a review (once the UI wires it, or via the API) and watch it go queued -> running -> completed in Neon's `review_jobs` table
+- [ ] Pick a repository, open a pull request, press Run review, and watch it go queued -> running -> completed on the review page
+- [ ] Leave feedback on a finding (the thumbs on the review page) and reload to confirm it persisted
+- [ ] With `DEMO_MODE=1`: open `/demo` in a private window, confirm findings render with no account, and press Run this review again to watch a job go queued -> running -> completed
+- [ ] With `DEMO_MODE` unset: `/demo`'s API returns 404 (`curl -s -o /dev/null -w '%{http_code}' https://difflens-api.onrender.com/demo/review`)
 
-## 8. Free-tier facts
+## 9. Free-tier facts
 
-- Render free spins the service down after about 15 minutes idle. The next request eats a 30-60s cold start. Fine for a demo, just warm it up before showing anyone.
+- Render free spins the service down after about 15 minutes idle. The next request eats a 30-60s cold start (measured: 32s on 2026-08-20). The keep-warm cron in step 7 is the fix; warming it by hand before showing anyone is the fallback.
 - Spin-down also stops the worker (it shares the container). A review submitted while asleep waits for the next request to wake the service; the sweep then picks it up. A review interrupted by spin-down is recovered by the stale-heartbeat sweep on the next boot.
 - Migrations run on **every** deploy via `start.sh` (`alembic upgrade head` before uvicorn). Alembic no-ops when already at head, so this is cheap, but a broken migration blocks boot: that is the intended failure mode.
 - Neon free tier suspends compute after idle too; the first query after suspend takes a few hundred ms extra. Nothing to do about it, just do not mistake it for a bug.

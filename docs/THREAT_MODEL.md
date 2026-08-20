@@ -110,6 +110,14 @@ per-user data.
   returns the offending `input`, which on `PUT /settings/ai-key` is an API
   key; the handler in `app/main.py` drops it.
 - The OpenAPI schema and interactive docs are not served in production.
+- The public demo routes are scoped by a column value, not by an argument.
+  Every query starts from `Repository.is_demo` and no demo route accepts an
+  id, so there is no parameter a caller can supply to widen what is returned;
+  a demo route cannot serve a real user's review because it never has one in
+  scope. With `DEMO_MODE` off they answer 404 rather than 403, so the surface
+  is invisible rather than merely closed. Both are classified in
+  `tests/test_authz.py`, whose completeness guard would have failed the build
+  had they been added without an authorization decision.
 - The GitHub scope is empty, so even a fully compromised token cannot read a
   private repository or write anywhere.
 
@@ -127,6 +135,20 @@ per-user data.
 - Jobs retry at most `max_attempts` times with exponential backoff, so a
   poisoned job cannot spin forever.
 - Persisted findings are capped at 100 per review.
+- **The public demo is the only unauthenticated endpoint that starts work**,
+  and its cap is structural rather than a check. The partial unique index
+  `uq_reviews_pr_sha_live` permits one live review per (pull request, head
+  sha); the demo is one pull request at one commit, so at most one demo job
+  can be queued or running at any instant, enforced by Postgres. Pressing the
+  button in a loop earns 409s, not a job flood. This matters specifically
+  because the rate limiter fails open (gap 2): on an anonymous endpoint,
+  failing open would otherwise mean unlimited job creation exactly when Redis
+  is already unhealthy. The per-IP limit on the rerun is fair sharing layered
+  on top of that floor, not the floor itself.
+- Finished demo reviews are pruned to the newest few, so anonymous reruns
+  cannot grow the database without bound (`app/demo/service.py`).
+- The demo runs the offline replay provider, never a live model, so no volume
+  of demo traffic can spend the operator's AI budget.
 
 ### Elevation of privilege
 
@@ -172,10 +194,17 @@ every line of it as an attempt to give the model instructions.
 - The model has no tools and no write path. The worst outcome of a successful
   injection is a wrong or missing finding, never an action.
 - Degradation is visible. A refusal, unusable output, truncation, an oversized
-  diff, or a mock provider each append an honest sentence to the summary and
-  set a flag on the review, so a suppressed AI stage cannot pass for a clean
-  one. That failure mode was real: production ran with no AI for a day and
-  looked healthy doing it.
+  diff, a mock provider, or the demo's recorded reviewer each append an honest
+  sentence to the summary and set a flag on the review, so a suppressed AI
+  stage cannot pass for a clean one. That failure mode was real: production
+  ran with no AI for a day and looked healthy doing it.
+- The public demo has no live model to inject into: it replays a recorded
+  response. The recorded candidates still go through the full validation
+  chain rather than around it, so the demo exercises the defense rather than
+  bypassing it, and a sample edit that stranded a candidate on a line the
+  diff no longer touches would be discarded exactly like a hallucination.
+  `tests/analysis/test_demo_sample.py` asserts the discard counters are zero,
+  so that drift fails the build instead of quietly emptying the demo.
 
 ## Supply chain
 
@@ -186,8 +215,11 @@ every line of it as an attempt to give the model instructions.
   only to the range, not to the byte. That gap is listed below.
 - Secret scanning and push protection belong in Settings > Code security.
   They are repository settings rather than files, so nothing committed here
-  can assert that they are on; verify in the GitHub UI. Both are free on
-  public repositories and there is no reason not to have them.
+  can assert that they are on. Both were confirmed enabled on 2026-08-20 via
+  `gh api repos/AnirudIye/difflens`, which is the way to re-check them:
+
+      gh api repos/AnirudIye/difflens \
+        --jq '.security_and_analysis'
 - The reviewed repository's tooling is never installed or loaded, as above.
 - CI runs lint, format, types, and the full test suite on every push,
   including the authorization sweep and the full-loop integration test.
@@ -214,9 +246,10 @@ Deliberate, with reasons. This is the honest half.
    from cross-site requests using those methods. The API is same-origin behind
    the Next rewrite, so there is no CORS allowance to abuse either. A token
    would add a third layer over two that already hold.
-4. **No per-IP limiting on unauthenticated endpoints.** `GET /auth/github/login`
-   can be hammered anonymously. It sets a cookie and redirects, touching no
-   database, so the cost is Render's bandwidth rather than ours.
+4. **Limited per-IP limiting on unauthenticated endpoints.**
+   `GET /auth/github/login` can be hammered anonymously; it sets a cookie and
+   redirects, touching no database, so the cost is Render's bandwidth rather
+   than ours. The demo rerun is per-IP limited, with the caveat below.
 5. **Secrets live in platform environment variables**, not a secrets manager.
    Free tier, and a manager would be one more service to hold credentials for.
 6. **Key rotation is manual** and there is no rotation schedule. Credentials
@@ -242,7 +275,41 @@ Deliberate, with reasons. This is the honest half.
     apart can install different versions of the same declared dependency. The
     web app and the ESLint runtime do commit lockfiles. Generating `uv.lock`
     would close this, and is one command.
-13. **Private repositories are out of scope**, which is a security decision as
+13. **The demo's per-IP limit trusts a spoofable header.** Behind Vercel's
+    rewrite proxy the caller's address reaches the API only in
+    `X-Forwarded-For`, and any client can put whatever it likes at the front
+    of that header, so the identity the limiter counts against is not
+    trustworthy. It does not need to be for the demo to be safe: the
+    live-review index caps the demo at one job at a time in Postgres
+    regardless of what the limiter believes. Making the identity trustworthy
+    would mean pinning the proxy's own address, which couples the API to
+    Vercel's egress ranges for no gain against the thing that actually costs
+    money.
+
+    What spoofing used to buy was Redis keys. Each distinct value is its own
+    fixed-window bucket, so rotating the header both evaded the counter and
+    left a key per value for the length of the window; taken verbatim, one
+    unauthenticated request could pin megabytes of Redis for an hour.
+    `client_ip` now accepts a value only if it parses as an address, so
+    anything else collapses into a single `unknown` bucket that is rate
+    limited like any other. Measured after the change: 13 spoofed requests
+    produced one key of 38 bytes and started answering 429, against 23 keys
+    of up to 30KB and no 429 at all before it.
+
+    **Both** the header and `request.client` are validated, which is the part
+    that is easy to get wrong. uvicorn runs its proxy-headers middleware by
+    default and, for a connection from an address it treats as a trusted
+    proxy, replaces `request.client` with whatever `X-Forwarded-For` said. A
+    fallback to the "socket peer" therefore hands back the very value the
+    header check just rejected. The first version of this fix did exactly
+    that and still wrote 30KB keys while passing its own unit test, because
+    the test supplied a peer the middleware had not rewritten.
+
+    Rotating real addresses still costs small keys, and that residual is
+    accepted. Redis is a doorbell here and the limiter fails open, so the
+    worst case degrades the worker to its Postgres sweep rather than breaking
+    the product.
+14. **Private repositories are out of scope**, which is a security decision as
     much as a scope one: the OAuth `repo` scope grants write access, and a
     review tool that can write to your code is the wrong posture. Private
     repository support means a GitHub App with granular permissions.
