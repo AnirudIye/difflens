@@ -39,6 +39,10 @@ class ReviewFinished(Exception):
     pass
 
 
+class ReviewStillRunning(Exception):
+    """Re-running a live review would race the worker that owns it."""
+
+
 def create_review(
     db: Session,
     user: User,
@@ -84,6 +88,40 @@ def create_review(
     db.add(job)
     db.commit()
     return review, job
+
+
+def rerun_review(
+    db: Session,
+    user: User,
+    review: Review,
+    pull: PullRequest,
+    repository: Repository,
+    client: GitHubClient,
+) -> tuple[Review, ReviewJob]:
+    """Review this pull request again, superseding the finished review.
+
+    The point is re-reviewing the same commit after something about the
+    reviewer changed (an AI key, usually). A finished review at that commit
+    would otherwise block the new one through uq_reviews_pr_sha_live, so it
+    moves to superseded first, which sits outside that index.
+
+    Superseding is a guarded UPDATE, so of two concurrent re-runs only one
+    wins the row and the loser's create attempt hits the index and surfaces
+    as ReviewAlreadyExists rather than quietly duplicating work.
+    """
+    if review.status not in TERMINAL_REVIEW_STATUSES:
+        raise ReviewStillRunning()
+
+    superseded = db.execute(
+        update(Review)
+        .where(Review.id == review.id, Review.status == review.status)
+        .values(status="superseded")
+        .returning(Review.id)
+    ).first()
+    if superseded is None:
+        # Someone else moved this row first; let the index arbitrate below
+        db.rollback()
+    return create_review(db, user, pull, repository, client)
 
 
 def latest_job(db: Session, review: Review) -> ReviewJob | None:

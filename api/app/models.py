@@ -164,7 +164,7 @@ class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'superseded')",
             name="ck_reviews_status",
         ),
         Index("ix_reviews_user_id_created_at", "user_id", text("created_at DESC")),
