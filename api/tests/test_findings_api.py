@@ -153,6 +153,29 @@ def test_review_payload_carries_pull_context(client, db, make_user_with_session)
     assert uuid.UUID(pull["repository_id"])
 
 
+@pytest.mark.parametrize(
+    ("pipeline_version", "expected"),
+    [
+        ("cheap ai=gemini-3.6-flash ruff=0.14.0", "gemini-3.6-flash"),
+        ("cheap ai=mock ruff=0.14.0", "mock"),  # the UI must see through the stub
+        ("deterministic_only ruff=0.14.0 detect-secrets=1.5.0", None),
+        ("cheap ai=mock ruff=0.14.0 ai_refused", "mock"),
+        (None, None),  # never ran
+    ],
+)
+def test_review_payload_reports_the_ai_model(
+    client, db, make_user_with_session, pipeline_version, expected
+):
+    user, _ = make_user_with_session("alice")
+    review, _finding = _seed_review_with_finding(db, user)
+    review.pipeline_version = pipeline_version
+    db.flush()
+
+    body = client.get(f"/reviews/{review.id}").json()
+
+    assert body["ai_model"] == expected
+
+
 def test_cancel_payload_carries_feedback_and_pull_context(client, db, make_user_with_session):
     """The cancel response is applied verbatim by the review page; losing
     the pull context or verdicts there would blank the header silently."""

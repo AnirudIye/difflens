@@ -40,6 +40,18 @@ def _finding_item(finding: Finding, verdict: str | None) -> dict[str, Any]:
     }
 
 
+def _ai_model(review: Review) -> str | None:
+    """Which model produced the AI findings, from the recorded pipeline_version.
+
+    None means no AI ran at all; "mock" means the offline stub ran, which is
+    not a real review. The UI has to be able to tell those from a real pass.
+    """
+    for token in (review.pipeline_version or "").split():
+        if token.startswith("ai="):
+            return token[3:]
+    return None
+
+
 def _pull_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
     return {
         "id": str(pull.id),
@@ -62,6 +74,7 @@ def _review_item(
         "id": str(review.id),
         "pull_request_id": str(review.pull_request_id),
         "pull_request": pull_context,
+        "ai_model": _ai_model(review),
         "status": review.status,
         "head_sha": review.head_sha,
         "base_sha": review.base_sha,
