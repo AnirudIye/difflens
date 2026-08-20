@@ -55,12 +55,31 @@ def create_review(
     Raises PullRequestClosed, ReviewAlreadyExists, or any GitHubError from
     the refetch.
     """
+    payload = refetch_open_pull(db, pull, repository, client)
+    return _insert_review(db, user, pull, payload)
+
+
+def refetch_open_pull(
+    db: Session, pull: PullRequest, repository: Repository, client: GitHubClient
+) -> dict:
+    """Refresh the stored pull request from GitHub, and refuse a closed one.
+
+    Split out so a rerun can ask this question BEFORE it touches the review
+    it is replacing. The commit below is exactly why that matters: it
+    persists the refreshed row, and it would just as happily persist a
+    half-finished rerun that is about to be refused.
+    """
     payload = client.get_pull(repository.full_name, pull.github_number)
     apply_pull_payload(pull, payload, datetime.now(UTC))
     if payload["state"] != "open":
         db.commit()  # keep the refreshed row even when we refuse the review
         raise PullRequestClosed()
+    return payload
 
+
+def _insert_review(
+    db: Session, user: User, pull: PullRequest, payload: dict
+) -> tuple[Review, ReviewJob]:
     review = Review(
         user_id=user.id,
         pull_request_id=pull.id,
@@ -101,27 +120,38 @@ def rerun_review(
     """Review this pull request again, superseding the finished review.
 
     The point is re-reviewing the same commit after something about the
-    reviewer changed (an AI key, usually). A finished review at that commit
+    reviewer changed (an AI key, usually). A completed review at that commit
     would otherwise block the new one through uq_reviews_pr_sha_live, so it
     moves to superseded first, which sits outside that index.
 
     Superseding is a guarded UPDATE, so of two concurrent re-runs only one
     wins the row and the loser's create attempt hits the index and surfaces
     as ReviewAlreadyExists rather than quietly duplicating work.
+
+    Only a completed review is superseded. Failed and cancelled reviews are
+    outside the index already, so overwriting their status would buy nothing
+    and would destroy the record of how they ended: the page would render a
+    failed review as a clean pass and its error message would vanish.
     """
     if review.status not in TERMINAL_REVIEW_STATUSES:
         raise ReviewStillRunning()
 
-    superseded = db.execute(
-        update(Review)
-        .where(Review.id == review.id, Review.status == review.status)
-        .values(status="superseded")
-        .returning(Review.id)
-    ).first()
-    if superseded is None:
-        # Someone else moved this row first; let the index arbitrate below
-        db.rollback()
-    return create_review(db, user, pull, repository, client)
+    # Before the supersede, never after. create_review commits on the closed
+    # path, which used to commit the pending supersede along with it and
+    # leave the old review replaced by a review that was never created.
+    payload = refetch_open_pull(db, pull, repository, client)
+
+    if review.status == "completed":
+        superseded = db.execute(
+            update(Review)
+            .where(Review.id == review.id, Review.status == review.status)
+            .values(status="superseded")
+            .returning(Review.id)
+        ).first()
+        if superseded is None:
+            # Someone else moved this row first; let the index arbitrate below
+            db.rollback()
+    return _insert_review(db, user, pull, payload)
 
 
 def latest_job(db: Session, review: Review) -> ReviewJob | None:

@@ -133,6 +133,58 @@ def test_rerun_supersedes_the_finished_review(client, db, synced_pr, github, doo
     assert len(doorbell) == 2
 
 
+def test_rerun_of_a_closed_pull_request_leaves_the_old_review_alone(
+    client, db, synced_pr, github, doorbell
+):
+    """A refused rerun must refuse completely.
+
+    The supersede used to happen first, and create_review commits on the
+    closed path, so the commit took the pending supersede with it: the API
+    answered 409, and the old review was left superseded with nothing
+    replacing it. The page then told the user a newer review had replaced
+    this one, which was a specific falsehood.
+    """
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    old = _finish(db, uuid.UUID(first["id"]))
+    github.pulls[0] = {**pull_payload(41, "Add login form", first["head_sha"]), "state": "closed"}
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "pull_request_closed"
+    db.refresh(old)
+    assert old.status == "completed", "a refused rerun still moved the old review"
+    assert len(db.execute(select(Review.id)).all()) == 1
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_rerun_after_a_failure_keeps_the_failure_on_the_record(
+    client, db, synced_pr, github, doorbell, status
+):
+    """Only a completed review needs superseding.
+
+    Failed and cancelled reviews sit outside uq_reviews_pr_sha_live already,
+    so overwriting their status buys nothing and costs the record of how they
+    ended: the review page renders superseded as a finished pass, so a failed
+    review would come back as a clean one with its error message gone.
+    """
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    old = _finish(db, uuid.UUID(first["id"]), status)
+    old.error_user_message = "GitHub did not respond as expected"
+    db.flush()
+
+    fresh = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert fresh.status_code == 201
+    db.refresh(old)
+    assert old.status == status
+    body = client.get(f"/reviews/{first['id']}").json()
+    assert body["status"] == status
+    assert body["error_user_message"] == "GitHub did not respond as expected"
+
+
 def test_rerun_refuses_while_the_review_is_live(client, db, synced_pr, github, doorbell):
     _user, pr = synced_pr
     first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
