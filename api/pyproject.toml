@@ -40,8 +40,9 @@ packages = ["app", "worker"]
 
 [tool.ruff]
 line-length = 100
-# fixture workspaces contain deliberately buggy code the pipeline must find
-extend-exclude = ["tests/fixtures"]
+# fixture workspaces and the demo sample contain deliberately buggy code the
+# pipeline must find; linting them here would fail on the bugs that are the point
+extend-exclude = ["tests/fixtures", "app/demo/sample/files"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
@@ -58,7 +59,7 @@ known-third-party = ["alembic"]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
 include = ["app", "tests", "worker"]
-exclude = ["tests/fixtures"]
+exclude = ["tests/fixtures", "app/demo/sample/files"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
