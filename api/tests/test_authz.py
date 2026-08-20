@@ -27,6 +27,11 @@ PUBLIC: dict[tuple[str, str], str] = {
     ("GET", "/auth/github/login"): "starts the OAuth dance, there is no session yet",
     ("GET", "/auth/github/callback"): "finishes the OAuth dance, still no session",
     ("POST", "/auth/logout"): "signing out is idempotent, and 401 here would be theatre",
+    # The demo exists so a visitor with no account can see a review. Both
+    # routes are scoped to Repository.is_demo by construction rather than by
+    # a check, take no id, and answer 404 entirely when DEMO_MODE is off.
+    ("GET", "/demo/review"): "the public demo, readable without an account",
+    ("POST", "/demo/review/rerun"): "the public demo's rerun, IP rate limited",
 }
 
 # (method, path template, JSON body) - everything that must answer 401 with no

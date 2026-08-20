@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     review_rate_limit: int = 20
     review_rate_limit_window_s: int = 3600
 
+    # The public demo: a seeded pull request anyone can review with no
+    # account. Off by default, so a deployment opts in rather than out.
+    demo_mode: bool = False
+    # Per-IP, on the demo rerun only. The live-review index already caps the
+    # demo at one job at a time, so this is fair sharing rather than the
+    # safety floor; see docs/THREAT_MODEL.md.
+    demo_rate_limit: int = 5
+    demo_rate_limit_window_s: int = 3600
+
     github_client_id: str = ""
     github_client_secret: str = ""
     session_secret: str = "dev-session-secret-change-me"

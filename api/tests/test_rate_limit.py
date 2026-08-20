@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 import redis
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app import queue, rate_limit
 from app.config import settings
@@ -211,3 +211,65 @@ def test_the_limit_reads_like_english(max_requests, window_s, expected):
     # The frontend shows this message verbatim, so "1 reviews per 60 minutes"
     # would be shipped copy, not a log line
     assert rate_limit.describe_limit(Limit("reviews", max_requests, window_s)) == expected
+
+
+def _request(forwarded: str | None, host: str = "10.0.0.1") -> Request:
+    """A stand-in carrying only the two attributes client_ip reads."""
+    return cast(Request, _FakeRequest(forwarded, host))
+
+
+class _FakeClient:
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FakeRequest:
+    """Just the two things client_ip reads."""
+
+    def __init__(self, forwarded: str | None, host: str = "10.0.0.1") -> None:
+        self.headers = {} if forwarded is None else {"X-Forwarded-For": forwarded}
+        self.client = _FakeClient(host)
+
+
+def test_client_ip_takes_the_first_forwarded_address():
+    assert rate_limit.client_ip(_request("203.0.113.9, 70.1.2.3")) == "203.0.113.9"
+    assert rate_limit.client_ip(_request("2001:db8::1")) == "2001:db8::1"
+
+
+def test_client_ip_falls_back_to_the_socket_peer():
+    for forwarded in (None, "", "   ", "not-an-ip", "example.com"):
+        assert rate_limit.client_ip(_request(forwarded)) == "10.0.0.1"
+
+
+def test_client_ip_validates_the_peer_too():
+    """The peer is not necessarily a peer.
+
+    uvicorn runs its proxy-headers middleware by default and, for a
+    connection from an address it considers a trusted proxy, replaces
+    request.client with whatever X-Forwarded-For said. A fallback that
+    trusted request.client would hand back the very value the header check
+    just rejected, which is how the first version of this fix still wrote
+    30KB Redis keys while passing its own unit test.
+    """
+    spoofed = "GARBAGE-XYZ"
+    assert rate_limit.client_ip(_request(spoofed, host=spoofed)) == "unknown"
+    assert rate_limit.client_ip(_request("A" * 40_000, host="B" * 40_000)) == "unknown"
+    # A real peer is still used when the header is unusable
+    assert rate_limit.client_ip(_request("not-an-ip", host="198.51.100.4")) == "198.51.100.4"
+
+
+def test_client_ip_cannot_be_turned_into_an_unbounded_redis_key():
+    """The header is attacker-controlled on an endpoint that needs no session.
+
+    Taken verbatim it became key material, so one request could pin a
+    megabyte of Redis for a whole window, and rotating the value evaded the
+    counter entirely because each distinct string is its own bucket.
+    """
+    for size in (100, 5_000, 1_000_000):
+        identity = rate_limit.client_ip(_request("A" * size))
+        assert len(identity) <= rate_limit.MAX_FORWARDED_CHARS
+        assert "A" not in identity
+    padded = rate_limit.client_ip(_request("PROBE." + "A" * 1900))
+    assert padded == "10.0.0.1"
+    # A real address still passes through, and is bounded by its own format
+    assert len(rate_limit.client_ip(_request("203.0.113.9"))) <= 45
