@@ -3,7 +3,7 @@
 # node binary that runs it. The adapter degrades cleanly when either is
 # missing (the review just loses its JavaScript findings), so a problem here
 # costs TypeScript support and never a Python review.
-FROM node:20-bookworm-slim AS eslint
+FROM node:26-bookworm-slim AS eslint
 
 WORKDIR /eslint-runtime
 COPY eslint-runtime/package.json eslint-runtime/package-lock.json ./
