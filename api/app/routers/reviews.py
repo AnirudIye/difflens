@@ -41,16 +41,31 @@ def _finding_item(finding: Finding, verdict: str | None) -> dict[str, Any]:
     }
 
 
+def _pipeline_marker(review: Review, prefix: str) -> str | None:
+    """One space-separated marker out of the recorded pipeline_version."""
+    for token in (review.pipeline_version or "").split():
+        if token.startswith(prefix):
+            return token[len(prefix) :]
+    return None
+
+
 def _ai_model(review: Review) -> str | None:
-    """Which model produced the AI findings, from the recorded pipeline_version.
+    """Which model produced the AI findings.
 
     None means no AI ran at all; "mock" means the offline stub ran, which is
     not a real review. The UI has to be able to tell those from a real pass.
     """
-    for token in (review.pipeline_version or "").split():
-        if token.startswith("ai="):
-            return token[3:]
-    return None
+    return _pipeline_marker(review, "ai=")
+
+
+def _ai_skipped(review: Review) -> str | None:
+    """Why the AI stage did not run, when it was the pipeline's decision.
+
+    Without this, "the diff was too large" and "nobody configured a reviewer"
+    both arrive as a null model, and the page offers to take an API key from
+    a user who already has one and would not have been helped by it.
+    """
+    return _pipeline_marker(review, "ai_skipped=")
 
 
 def _pull_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
@@ -76,6 +91,7 @@ def _review_item(
         "pull_request_id": str(review.pull_request_id),
         "pull_request": pull_context,
         "ai_model": _ai_model(review),
+        "ai_skipped": _ai_skipped(review),
         "status": review.status,
         "head_sha": review.head_sha,
         "base_sha": review.base_sha,

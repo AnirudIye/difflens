@@ -565,7 +565,17 @@ function ReviewBody({
           {review.summary ? (
             <p className="review-summary">{review.summary}</p>
           ) : null}
-          {!hasRealAI(review) ? (
+          {review.ai_skipped === "diff_too_large" ? (
+            // A key would not have helped: the pipeline refused the diff, not
+            // the provider. Offering Settings here is wrong advice.
+            <div className="notice ai-notice" role="status">
+              <p>
+                This diff was too large to send to the AI reviewer, so these
+                findings come from the deterministic analyzers alone. A
+                smaller pull request gets the full review.
+              </p>
+            </div>
+          ) : !hasRealAI(review) ? (
             <div className="notice ai-notice" role="status">
               <p>
                 No AI reviewer ran, so these findings come from the

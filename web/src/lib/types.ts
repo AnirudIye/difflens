@@ -72,6 +72,10 @@ export type Review = {
   // null means no AI ran; "mock" means the offline stub did, which is not a
   // real review. Neither is a clean AI pass.
   ai_model: string | null;
+  // Why the AI stage did not run, when the pipeline decided that (today
+  // only "diff_too_large"). Null covers both a real AI pass and no AI at
+  // all, which ai_model tells apart.
+  ai_skipped: string | null;
   status: ReviewStatus;
   head_sha: string;
   base_sha: string;
