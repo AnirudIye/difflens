@@ -304,10 +304,23 @@ body {
 .row {
   display: flex;
   align-items: center;
+  /* The chip and the timestamp both refuse to wrap their own text, so
+     without this the row sets a min-content floor of ~350px and a 375px
+     phone scrolls the whole page sideways */
+  flex-wrap: wrap;
   gap: 0.75rem;
   padding: 0.875rem 0.75rem;
   color: var(--ink);
   text-decoration: none;
+}
+
+.row > .mono {
+  /* Last resort under the wrap: a repository name long enough to fill the
+     line on its own gets an ellipsis rather than pushing the page wider */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row:hover {
