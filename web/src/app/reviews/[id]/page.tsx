@@ -4,15 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import FindingCard from "@/components/FindingCard";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
+import {
+  groupByFile,
+  hasRealAI,
+  severitySummary,
+} from "@/lib/findings";
 import { relativeTime } from "@/lib/time";
 import type {
   FeedbackVerdict,
   Finding,
   Review,
   ReviewStatus,
-  Severity,
 } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
 import { useSignOut } from "@/lib/useSignOut";
@@ -30,14 +35,6 @@ const STATUS_LABEL: Record<ReviewStatus, string> = {
   superseded: "Replaced by a newer review",
 };
 
-const SOURCE_LABEL: Record<Finding["source"], string> = {
-  deterministic: "analyzer",
-  ai: "ai",
-  hybrid: "analyzer + ai",
-};
-
-const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
-
 type LoadState =
   | { kind: "loading" }
   | { kind: "waking" }
@@ -46,43 +43,6 @@ type LoadState =
 
 function isActive(status: ReviewStatus): boolean {
   return status === "queued" || status === "running";
-}
-
-// The mock provider answers with no findings and no error, so a review it
-// produced is indistinguishable from a clean AI pass unless we say so
-function hasRealAI(review: Review): boolean {
-  return review.ai_model !== null && review.ai_model !== "mock";
-}
-
-function lineRef(finding: Finding): string | null {
-  if (finding.start_line === null) {
-    return null;
-  }
-  if (finding.end_line === null || finding.end_line === finding.start_line) {
-    return `L${finding.start_line}`;
-  }
-  return `L${finding.start_line}-L${finding.end_line}`;
-}
-
-function groupByFile(findings: Finding[]): Array<[string, Finding[]]> {
-  const groups = new Map<string, Finding[]>();
-  for (const finding of findings) {
-    const list = groups.get(finding.file_path);
-    if (list) {
-      list.push(finding);
-    } else {
-      groups.set(finding.file_path, [finding]);
-    }
-  }
-  return [...groups.entries()];
-}
-
-function severitySummary(review: Review): Array<[Severity, number]> {
-  const counts = review.severity_counts ?? {};
-  return SEVERITY_ORDER.flatMap((severity) => {
-    const count = counts[severity];
-    return count ? [[severity, count] as [Severity, number]] : [];
-  });
 }
 
 export default function ReviewPage() {
@@ -641,62 +601,5 @@ function ReviewBody({
         </>
       ) : null}
     </>
-  );
-}
-
-function FindingCard({
-  finding,
-  busy,
-  onFeedback,
-}: {
-  finding: Finding;
-  busy: boolean;
-  onFeedback: (finding: Finding, verdict: FeedbackVerdict) => void;
-}) {
-  const lines = lineRef(finding);
-  return (
-    <li className="finding">
-      <div className="finding-head">
-        <span className={`chip sev-${finding.severity}`}>
-          {finding.severity}
-        </span>
-        <span className="chip">{finding.category}</span>
-        {finding.confidence ? (
-          <span className="chip">{finding.confidence} confidence</span>
-        ) : null}
-        <span className="chip">{SOURCE_LABEL[finding.source]}</span>
-        {lines ? <span className="mono finding-lines">{lines}</span> : null}
-      </div>
-      <p className="finding-title">{finding.title}</p>
-      {finding.explanation && finding.explanation !== finding.title ? (
-        <p className="finding-body">{finding.explanation}</p>
-      ) : null}
-      {finding.recommendation ? (
-        <p className="finding-body finding-rec">
-          <span className="rec-label">Fix</span>
-          {finding.recommendation}
-        </p>
-      ) : null}
-      <div className="feedback-row">
-        <button
-          className="button button-quiet"
-          type="button"
-          disabled={busy}
-          aria-pressed={finding.feedback === "useful"}
-          onClick={() => onFeedback(finding, "useful")}
-        >
-          Useful
-        </button>
-        <button
-          className="button button-quiet"
-          type="button"
-          disabled={busy}
-          aria-pressed={finding.feedback === "not_useful"}
-          onClick={() => onFeedback(finding, "not_useful")}
-        >
-          Not useful
-        </button>
-      </div>
-    </li>
   );
 }
