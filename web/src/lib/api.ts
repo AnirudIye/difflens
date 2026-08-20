@@ -1,4 +1,4 @@
-import type { ApiErrorEnvelope, Me } from "./types";
+import type { ApiErrorEnvelope } from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -56,13 +56,6 @@ export async function apiFetch<T>(
   return res.json() as Promise<T>;
 }
 
-export async function getMe(): Promise<Me | null> {
-  try {
-    return await apiFetch<Me>("/auth/me");
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      return null;
-    }
-    throw err;
-  }
-}
+// Identity now lives in useMe(), which distinguishes "signed out" from
+// "could not ask" and retries the latter. Collapsing the two into null is
+// what silently stripped the navigation off every page.
