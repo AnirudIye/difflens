@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 
 /** Confirmation built on the native <dialog>.
  *
@@ -30,6 +30,11 @@ export default function ConfirmDialog({
   onCancel: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // Per instance, because a page can hold more than one of these. Both
+  // dialogs on the review page shared a hardcoded id, so whichever one
+  // mounted first named them both: "Run again" was announced as "Stop
+  // this review?"
+  const titleId = useId();
 
   useEffect(() => {
     const el = ref.current;
@@ -47,7 +52,7 @@ export default function ConfirmDialog({
     <dialog
       className="confirm"
       ref={ref}
-      aria-labelledby="confirm-title"
+      aria-labelledby={titleId}
       onCancel={(event) => {
         // Escape: let React own the open state rather than the DOM
         event.preventDefault();
@@ -64,7 +69,7 @@ export default function ConfirmDialog({
       }}
     >
       <div className="confirm-panel" onClick={(event) => event.stopPropagation()}>
-        <h2 className="confirm-title" id="confirm-title">
+        <h2 className="confirm-title" id={titleId}>
           {title}
         </h2>
         <p className="confirm-body">{body}</p>
