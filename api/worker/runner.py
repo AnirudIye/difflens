@@ -26,9 +26,13 @@ from sqlalchemy.orm import Session
 
 from app.ai.errors import AIProviderConfigError, UserAIKeyError
 from app.ai.factory import resolve_provider
+from app.ai.mock import MockProvider
+from app.analysis.ai_review import DEMO_AI_MODEL
 from app.analysis.models import ReviewJob as AnalysisJob
 from app.analysis.models import ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
+from app.demo import sample as demo_sample
+from app.demo.candidates import DEMO_CANDIDATES
 from app.models import (
     Finding,
     ProviderConnection,
@@ -236,6 +240,39 @@ def process_job(db: Session, job_id: uuid.UUID, worker_id: str) -> str:
     return run_claimed_job(db, job, worker_id)
 
 
+def _run_demo_review(review: Review, pull: PullRequest, repository: Repository) -> ReviewResult:
+    """Run the bundled demo pull request. No GitHub, no provider key, no cost.
+
+    Deliberately takes no session and no job: it touches nothing but the
+    filesystem and the pure pipeline, so the caller keeps every cancellation
+    and ownership decision in one place. An earlier version checkpointed in
+    here and signalled early exit by returning None, which made the caller
+    ask _checkpoint a second time; by then cancel_job had already moved the
+    row out of "running", so a cancelled demo review reported itself as
+    "lost".
+
+    The diff and the workspace come from app/demo/sample/, which ships in the
+    image; api/tests/ does not. Everything after that is the ordinary
+    pipeline, so the demo exercises the same analyzers, the same validation
+    chain, and the same dedup as a real review rather than copies of them.
+    """
+    with tempfile.TemporaryDirectory(prefix="difflens-demo-") as tmp:
+        workspace = Path(tmp)
+        demo_sample.populate_workspace(workspace)
+        return run_review(
+            AnalysisJob(
+                repo_full_name=repository.full_name,
+                pr_title=pull.title,
+                base_sha=review.base_sha,
+                head_sha=review.head_sha,
+                diff_text=demo_sample.build_diff(),
+                workspace=workspace,
+                mode="demo",
+            ),
+            provider=MockProvider(DEMO_CANDIDATES, model=DEMO_AI_MODEL),
+        )
+
+
 def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
     """Run a job this worker already claimed (the loop claims before it
     starts the heartbeat thread, so a beat can never race its own claim)."""
@@ -248,65 +285,78 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
         if outcome := _checkpoint(db, job, worker_id):
             return outcome
 
-        # Resolve the AI provider before spending any GitHub calls: the
-        # review author's own key wins, then server config. A config error
-        # is permanent and burns no retries.
-        try:
-            mode, ai_provider, ai_source = resolve_provider(db, review.user_id)
-        except UserAIKeyError as exc:
-            # Only the user can fix their unreadable key; say so
-            return _fail_or_lost(db, job, worker_id, BYOK_MISCONFIGURED_MESSAGE, str(exc))
-        except ValueError as exc:
-            return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
-
         pull = db.get(PullRequest, review.pull_request_id)
         assert pull is not None
         repository = db.get(Repository, pull.repository_id)
         assert repository is not None
-        connection = db.execute(
-            select(ProviderConnection).where(
-                ProviderConnection.user_id == review.user_id,
-                ProviderConnection.provider == "github",
-            )
-        ).scalar_one_or_none()
-        if connection is None or connection.token_invalid:
-            return _fail_or_lost(
-                db, job, worker_id, RECONNECT_MESSAGE, "github connection missing or invalid"
-            )
 
-        with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
-            compare = client.compare(repository.full_name, review.base_sha, review.head_sha)
+        if repository.is_demo:
+            # The public demo, decided before the provider is resolved and
+            # before any token is looked up. Entering this branch first is
+            # what guarantees a demo review can reach neither GitHub nor the
+            # operator's AI key, whoever started it.
+            mode = "demo"
             if outcome := _checkpoint(db, job, worker_id):
                 return outcome
+            result = _run_demo_review(review, pull, repository)
+        else:
+            # Resolve the AI provider before spending any GitHub calls: the
+            # review author's own key wins, then server config. A config error
+            # is permanent and burns no retries.
+            try:
+                mode, ai_provider, ai_source = resolve_provider(db, review.user_id)
+            except UserAIKeyError as exc:
+                # Only the user can fix their unreadable key; say so
+                return _fail_or_lost(db, job, worker_id, BYOK_MISCONFIGURED_MESSAGE, str(exc))
+            except ValueError as exc:
+                return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
 
-            files = compare.get("files", [])
-            if len(files) >= COMPARE_FILE_CAP:
-                return _fail_or_lost(
-                    db,
-                    job,
-                    worker_id,
-                    TOO_MANY_FILES_MESSAGE,
-                    "compare files[] truncated at GitHub's 300-file cap",
+            connection = db.execute(
+                select(ProviderConnection).where(
+                    ProviderConnection.user_id == review.user_id,
+                    ProviderConnection.provider == "github",
                 )
-            diff_text = build_diff_text(files)
-            with tempfile.TemporaryDirectory(prefix="difflens-review-") as tmp:
-                workspace = Path(tmp)
-                populate_workspace(client, repository.full_name, review.head_sha, files, workspace)
+            ).scalar_one_or_none()
+            if connection is None or connection.token_invalid:
+                return _fail_or_lost(
+                    db, job, worker_id, RECONNECT_MESSAGE, "github connection missing or invalid"
+                )
+
+            with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
+                compare = client.compare(repository.full_name, review.base_sha, review.head_sha)
                 if outcome := _checkpoint(db, job, worker_id):
                     return outcome
 
-                result = run_review(
-                    AnalysisJob(
-                        repo_full_name=repository.full_name,
-                        pr_title=pull.title,
-                        base_sha=review.base_sha,
-                        head_sha=review.head_sha,
-                        diff_text=diff_text,
-                        workspace=workspace,
-                        mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
-                    ),
-                    provider=ai_provider,
-                )
+                files = compare.get("files", [])
+                if len(files) >= COMPARE_FILE_CAP:
+                    return _fail_or_lost(
+                        db,
+                        job,
+                        worker_id,
+                        TOO_MANY_FILES_MESSAGE,
+                        "compare files[] truncated at GitHub's 300-file cap",
+                    )
+                diff_text = build_diff_text(files)
+                with tempfile.TemporaryDirectory(prefix="difflens-review-") as tmp:
+                    workspace = Path(tmp)
+                    populate_workspace(
+                        client, repository.full_name, review.head_sha, files, workspace
+                    )
+                    if outcome := _checkpoint(db, job, worker_id):
+                        return outcome
+
+                    result = run_review(
+                        AnalysisJob(
+                            repo_full_name=repository.full_name,
+                            pr_title=pull.title,
+                            base_sha=review.base_sha,
+                            head_sha=review.head_sha,
+                            diff_text=diff_text,
+                            workspace=workspace,
+                            mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
+                        ),
+                        provider=ai_provider,
+                    )
 
         stats = result.stats
         if stats.ai_refused or stats.ai_parse_failed or stats.ai_truncated or stats.ai_skipped:
