@@ -7,6 +7,7 @@ import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { AIKeyStatus } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
+import { useSignOut } from "@/lib/useSignOut";
 
 type Provider = "gemini" | "anthropic" | "openai";
 
@@ -19,6 +20,7 @@ const DEFAULT_MODELS: Record<Provider, string> = {
 export default function SettingsPage() {
   const router = useRouter();
   const me = useMe();
+  const signOut = useSignOut();
   const [status, setStatus] = useState<AIKeyStatus | null>(null);
   const [provider, setProvider] = useState<Provider>("gemini");
   const [apiKey, setApiKey] = useState("");
@@ -47,11 +49,6 @@ export default function SettingsPage() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  async function signOut() {
-    await apiFetch<undefined>("/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
 
   async function save(event: FormEvent) {
     event.preventDefault();

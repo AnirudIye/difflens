@@ -8,6 +8,7 @@ import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
 import type { Repository } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
+import { useSignOut } from "@/lib/useSignOut";
 
 type LoadState =
   | { kind: "loading" }
@@ -18,6 +19,7 @@ type LoadState =
 export default function RepositoriesPage() {
   const router = useRouter();
   const me = useMe();
+  const signOut = useSignOut();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   const load = useCallback(async () => {
@@ -59,11 +61,6 @@ export default function RepositoriesPage() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  async function signOut() {
-    await apiFetch<undefined>("/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
 
   return (
     <div className="shell">

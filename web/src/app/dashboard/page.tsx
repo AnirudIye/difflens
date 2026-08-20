@@ -1,19 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { apiFetch } from "@/lib/api";
 import { useMe } from "@/lib/useMe";
+import { useSignOut } from "@/lib/useSignOut";
 
 export default function DashboardPage() {
-  const router = useRouter();
   const me = useMe();
-
-  async function signOut() {
-    await apiFetch<undefined>("/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
+  const signOut = useSignOut();
 
   return (
     <div className="shell">

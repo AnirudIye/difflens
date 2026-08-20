@@ -8,6 +8,7 @@ import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
 import type { PullRequest, Review } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
+import { useSignOut } from "@/lib/useSignOut";
 
 type LoadState =
   | { kind: "loading" }
@@ -19,6 +20,7 @@ export default function RepositoryPullsPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const me = useMe();
+  const signOut = useSignOut();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [startingId, setStartingId] = useState<string | null>(null);
   const [runNote, setRunNote] = useState<string | null>(null);
@@ -62,11 +64,6 @@ export default function RepositoryPullsPage() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  async function signOut() {
-    await apiFetch<undefined>("/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
 
   async function runReview(pr: PullRequest) {
     setStartingId(pr.id);

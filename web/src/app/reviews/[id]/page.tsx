@@ -15,6 +15,7 @@ import type {
   Severity,
 } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
+import { useSignOut } from "@/lib/useSignOut";
 
 const POLL_MS = 2500;
 // Render's free tier wakes in 30-60s; past ~2.5 minutes something is wrong
@@ -88,6 +89,7 @@ export default function ReviewPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const me = useMe();
+  const signOut = useSignOut();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [stalled, setStalled] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -191,11 +193,6 @@ export default function ReviewPage() {
       window.clearTimeout(timer);
     };
   }, [params.id, router, pollEpoch, applyServerReview]);
-
-  async function signOut() {
-    await apiFetch<undefined>("/auth/logout", { method: "POST" });
-    router.push("/login");
-  }
 
   const mutateFinding = useCallback(
     (findingId: string, verdict: FeedbackVerdict | null) => {
