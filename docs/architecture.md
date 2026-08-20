@@ -41,16 +41,16 @@ Non-functional:
 
 ## Data flow for one review
 
-1. User clicks Run Review on a PR. The API resolves the PR's current base and head SHAs and pins them. The review describes exactly that snapshot forever, even if the branch moves.
+1. User clicks Run Review on a PR. The request is counted against a per-user rate limit first, because it is the only call in the product that spends GitHub quota, worker time, and AI tokens. The API then resolves the PR's current base and head SHAs and pins them. The review describes exactly that snapshot forever, even if the branch moves.
 2. The API inserts a `reviews` row and a `review_jobs` row (status `queued`) in one transaction, then pushes the job id to Redis. Postgres is the truth; Redis is a doorbell.
 3. The worker wakes from BRPOP (25 second blocking pop), claims the job with an atomic status transition to `running`, and starts heartbeating.
 4. A periodic sweep re-queues jobs whose heartbeat has gone stale. A dropped Redis message or a crashed worker delays a review; it never loses one.
 5. The worker fetches the diff and the file contents it needs from GitHub at the pinned SHAs.
-6. Deterministic analyzers run: ruff, detect-secrets, the missing-tests heuristic.
+6. Deterministic analyzers run in parallel, isolated from each other so one hung tool costs only its own findings: ruff for Python, ESLint for TypeScript and JavaScript, detect-secrets, and the missing-tests heuristic. Both linters ignore the reviewed repository's own configuration (`--isolated` and `--no-config-lookup`), since a lint config can load plugins and a plugin is executable code from a stranger.
 7. The AI reviewer runs through the provider abstraction (mock by default) and its output is parsed into candidate findings.
 8. Validation chain: every AI-cited file path and line number is checked against the reviewed snapshot. Citations that do not resolve are discarded and counted, never shown.
 9. Findings from all sources are fingerprinted on content, deduped, and persisted.
-10. The job transitions to `succeeded` (or `failed` with error detail). The UI, polling review status, renders the findings.
+10. The job transitions to `completed` (or `failed` with error detail, or `cancelled` if the user asked it to stop). The UI, polling review status, renders the findings.
 
 ## Storage
 
@@ -63,7 +63,7 @@ Postgres on Neon. One line per table:
 - `user_repositories`: which user can see which repo
 - `pull_requests`: PR metadata per repository
 - `reviews`: one review of one PR at one head SHA
-- `review_jobs`: the job state machine (queued, running, succeeded, failed) plus heartbeats
+- `review_jobs`: the job state machine (queued, running, completed, failed, cancelled) plus heartbeats
 - `findings`: the product: severity, category, confidence, source, location, fingerprint, recommendation
 - `feedback`: per-user, per-finding verdicts
 

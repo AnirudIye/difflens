@@ -64,7 +64,7 @@ def provider_from_settings() -> tuple[str, AIProvider | None]:
 def resolve_provider(db: Session, user_id: uuid.UUID) -> tuple[str, AIProvider | None, str]:
     """(mode, provider, source) for one user's review; their own key wins.
 
-    source is "user" (their stored key), "server" (config), or "none" —
+    source is "user" (their stored key), "server" (config), or "none";
     the worker uses it to blame the right party when the provider fails.
     """
     row = db.execute(select(UserAIKey).where(UserAIKey.user_id == user_id)).scalar_one_or_none()
