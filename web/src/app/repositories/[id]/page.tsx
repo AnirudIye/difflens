@@ -109,6 +109,10 @@ export default function RepositoryPullsPage() {
           setRunNote(
             "GitHub is not answering right now. Give it a minute and try again.",
           );
+        } else if (err.code === "rate_limited") {
+          // The server's own sentence carries the limit and the wait, and
+          // "Try again" is the one thing that will not work here
+          setRunNote(err.message);
         } else {
           setRunNote("Starting the review failed. Try again.");
         }

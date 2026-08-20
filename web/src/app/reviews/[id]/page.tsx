@@ -278,6 +278,10 @@ export default function ReviewPage() {
           setNote("That pull request has closed on GitHub, so it cannot be reviewed again.");
         } else if (err.code === "review_still_running") {
           setNote("This review is still going. Wait for it to finish first.");
+        } else if (err.code === "rate_limited") {
+          // The server's own sentence names the limit and the wait; "try
+          // again" is the one instruction that is wrong here
+          setNote(err.message);
         } else {
           setNote("Starting a new review failed. Try again.");
         }
