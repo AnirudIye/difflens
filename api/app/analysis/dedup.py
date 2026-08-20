@@ -53,6 +53,45 @@ def _mergeable(ai_finding: Finding, candidate: Finding) -> bool:
     return {ai_finding.category, candidate.category} <= MERGEABLE_CATEGORIES
 
 
+def _merge_target(ai_finding: Finding, candidates: list[Finding]) -> Finding | None:
+    """The deterministic finding an AI finding belongs to, or None.
+
+    Two rules, and the second matters as much as the first:
+
+    Closest wins, measured against the candidate's whole range rather than
+    its first line. Analyzers report real multi-line spans: ruff anchors an
+    S608 SQL injection at the start of the statement while the interpolation
+    the model describes can be several lines further down. Measured from
+    start lines, that S608 loses to any unrelated point finding sitting on
+    the model's own line.
+
+    A tie merges nothing. Taking the first mergeable candidate put the
+    model's explanation on whichever analyzer happened to run first, and
+    since security and correctness are cross-mergeable that could graft a
+    note about SQL injection onto a hardcoded-credential finding and render
+    it under that title. When two candidates are equally close, the line
+    numbers do not say which one the model meant, so the honest answer is to
+    leave the AI finding standing on its own rather than to guess. It costs
+    a hybrid and buys never attributing an explanation to the wrong bug.
+    """
+    matches = [c for c in candidates if _mergeable(ai_finding, c)]
+    if not matches:
+        return None
+    ai_line = ai_finding.start_line or 0
+
+    def rank(candidate: Finding) -> tuple[int, bool]:
+        start = candidate.start_line or 0
+        end = candidate.end_line or start
+        gap = max(start - ai_line, ai_line - end, 0)  # 0 when the range contains it
+        return gap, candidate.category != ai_finding.category
+
+    best = min(rank(c) for c in matches)
+    winners = [c for c in matches if rank(c) == best]
+    if len(winners) != 1:
+        return None
+    return winners[0]
+
+
 def _sort_key(finding: Finding) -> tuple:
     return (
         _SEVERITY_RANK[finding.severity],
@@ -92,7 +131,7 @@ def dedupe(findings: list[Finding], workspace: Path) -> tuple[list[Finding], boo
 
     merged = [f for f in by_fp.values() if f.source != "ai"]
     for ai_finding in [f for f in by_fp.values() if f.source == "ai"]:
-        target = next((c for c in merged if _mergeable(ai_finding, c)), None)
+        target = _merge_target(ai_finding, merged)
         if target is None:
             merged.append(ai_finding)
             continue
