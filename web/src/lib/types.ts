@@ -69,8 +69,9 @@ export type Review = {
   id: string;
   pull_request_id: string;
   pull_request: ReviewPullRequest;
-  // null means no AI ran; "mock" means the offline stub did, which is not a
-  // real review. Neither is a clean AI pass.
+  // null means no AI ran; "mock" means the offline stub did; "demo" means
+  // the public demo replayed its recorded response. None of the three is a
+  // clean AI pass, and the page has to say which it was.
   ai_model: string | null;
   // Why the AI stage did not run, when the pipeline decided that (today
   // only "diff_too_large"). Null covers both a real AI pass and no AI at

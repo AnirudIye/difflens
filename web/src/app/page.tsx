@@ -17,8 +17,9 @@ export default function Home() {
           and lines.
         </p>
         <p className="status">
-          The platform is under active construction.{" "}
-          <Link href="/login">Sign in with GitHub to get started</Link>.
+          <Link href="/demo">See a review without signing in</Link>, or{" "}
+          <Link href="/login">sign in with GitHub</Link> to review your own
+          pull requests.
         </p>
       </main>
     </>

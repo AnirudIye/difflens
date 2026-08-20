@@ -886,3 +886,33 @@ body {
 .notfound .review-actions {
   margin-top: 2rem;
 }
+
+/* Public demo */
+
+.demo-head {
+  /* The intro is one column of prose, not a title/action row */
+  display: block;
+  margin-bottom: 1.75rem;
+}
+
+.demo-lede {
+  margin-top: 0.625rem;
+  max-width: 46rem;
+  line-height: 1.6;
+}
+
+.demo-pr-title {
+  font-size: 1.0625rem;
+}
+
+.demo-review-head {
+  /* The title and the run button must stack rather than force the page
+     wider than the viewport, which is what a min-content floor on a
+     centred grid did to every page on Day 8 */
+  flex-wrap: wrap;
+  row-gap: 0.75rem;
+}
+
+.demo-cta {
+  margin-top: 1.25rem;
+}

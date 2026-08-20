@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import Mark from "@/components/Mark";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -45,6 +46,10 @@ export default async function LoginPage({
         <p className="trust">
           Read-only access to public repositories. DiffLens cannot write to your
           code.
+        </p>
+        <p className="login-note">
+          Not ready to connect an account?{" "}
+          <Link href="/demo">Look at a finished review first</Link>.
         </p>
       </main>
     </>
