@@ -8,6 +8,12 @@ set -e
 
 alembic upgrade head
 
+# Idempotent, and a no-op unless DEMO_MODE is on. Runs here rather than as an
+# app startup hook so a failure cannot take the health check with it, and is
+# explicitly non-fatal despite set -e: the demo is a nice-to-have and must
+# never be the reason the API fails to boot.
+python -m app.demo.seed || echo "demo seed failed, continuing without it" >&2
+
 (
   while true; do
     python -m worker || echo "worker exited ($?), restarting in 5s" >&2

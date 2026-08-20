@@ -77,14 +77,22 @@ def refetch_open_pull(
     return payload
 
 
-def _insert_review(
-    db: Session, user: User, pull: PullRequest, payload: dict
+def insert_review(
+    db: Session, user: User, pull: PullRequest, head_sha: str, base_sha: str
 ) -> tuple[Review, ReviewJob]:
+    """Insert one queued review at a pinned snapshot, plus its job.
+
+    Takes the two SHAs rather than a GitHub payload so the public demo, which
+    has no GitHub payload and never talks to GitHub, enqueues through exactly
+    this path: the same live-review index arbitration, the same one-job-per
+    -review guarantee. A second code path here is the kind of thing that
+    drifts and then only breaks for the demo.
+    """
     review = Review(
         user_id=user.id,
         pull_request_id=pull.id,
-        head_sha=payload["head"]["sha"],
-        base_sha=payload["base"]["sha"],
+        head_sha=head_sha,
+        base_sha=base_sha,
         status="queued",
     )
     db.add(review)
@@ -95,7 +103,7 @@ def _insert_review(
         existing = db.execute(
             select(Review).where(
                 Review.pull_request_id == pull.id,
-                Review.head_sha == payload["head"]["sha"],
+                Review.head_sha == head_sha,
                 Review.status.in_(LIVE_REVIEW_STATUSES),
             )
         ).scalar_one_or_none()
@@ -107,6 +115,12 @@ def _insert_review(
     db.add(job)
     db.commit()
     return review, job
+
+
+def _insert_review(
+    db: Session, user: User, pull: PullRequest, payload: dict
+) -> tuple[Review, ReviewJob]:
+    return insert_review(db, user, pull, payload["head"]["sha"], payload["base"]["sha"])
 
 
 def rerun_review(
@@ -141,17 +155,32 @@ def rerun_review(
     # leave the old review replaced by a review that was never created.
     payload = refetch_open_pull(db, pull, repository, client)
 
-    if review.status == "completed":
-        superseded = db.execute(
-            update(Review)
-            .where(Review.id == review.id, Review.status == review.status)
-            .values(status="superseded")
-            .returning(Review.id)
-        ).first()
-        if superseded is None:
-            # Someone else moved this row first; let the index arbitrate below
-            db.rollback()
+    supersede_completed(db, review)
     return _insert_review(db, user, pull, payload)
+
+
+def supersede_completed(db: Session, review: Review) -> None:
+    """Move a completed review out of the live index so a rerun can replace it.
+
+    Guarded on the status it was read at, so of two concurrent reruns only one
+    wins the row; the loser falls through to the index and surfaces as
+    ReviewAlreadyExists rather than quietly duplicating work.
+
+    Only a completed review is touched. Failed and cancelled reviews are
+    outside the index already, so overwriting their status would buy nothing
+    and would destroy the record of how they ended.
+    """
+    if review.status != "completed":
+        return
+    superseded = db.execute(
+        update(Review)
+        .where(Review.id == review.id, Review.status == review.status)
+        .values(status="superseded")
+        .returning(Review.id)
+    ).first()
+    if superseded is None:
+        # Someone else moved this row first; let the index arbitrate
+        db.rollback()
 
 
 def latest_job(db: Session, review: Review) -> ReviewJob | None:
