@@ -14,12 +14,14 @@ class Settings(BaseSettings):
     session_secret: str = "dev-session-secret-change-me"
     token_encryption_key: str = ""
 
-    # off | mock | anthropic | gemini; mock runs the full AI pipeline at zero cost
+    # off | mock | anthropic | gemini | openai; mock runs the full pipeline at zero cost
     ai_provider: str = "mock"
-    # Empty means the provider's default model (claude-opus-5 / gemini-3.6-flash)
+    # Empty means the provider's default model
+    # (claude-opus-5 / gemini-3.6-flash / gpt-5.6-terra)
     ai_model: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    openai_api_key: str = ""
 
 
 settings = Settings()

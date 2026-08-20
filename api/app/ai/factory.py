@@ -10,6 +10,7 @@ from app.ai.anthropic_provider import AnthropicProvider
 from app.ai.errors import UserAIKeyError
 from app.ai.gemini_provider import GeminiProvider
 from app.ai.mock import MockProvider
+from app.ai.openai_provider import OpenAIProvider
 from app.analysis.ai_review import AIProvider
 from app.config import settings
 from app.models import UserAIKey
@@ -18,6 +19,9 @@ from app.security import decrypt_token
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5",
     "gemini": "gemini-3.6-flash",
+    # Terra is the balanced tier: far cheaper than a flagship, and a review
+    # prompt is capped, so a worst-case attempt costs a few cents
+    "openai": "gpt-5.6-terra",
 }
 
 
@@ -26,6 +30,8 @@ def build_provider(kind: str, api_key: str, model: str | None) -> AIProvider:
         return AnthropicProvider(api_key, model or DEFAULT_MODELS["anthropic"])
     if kind == "gemini":
         return GeminiProvider(api_key, model or DEFAULT_MODELS["gemini"])
+    if kind == "openai":
+        return OpenAIProvider(api_key, model or DEFAULT_MODELS["openai"])
     raise ValueError(f"unknown AI provider {kind!r}")
 
 
@@ -46,7 +52,13 @@ def provider_from_settings() -> tuple[str, AIProvider | None]:
         if not settings.gemini_api_key:
             raise ValueError("AI_PROVIDER=gemini requires GEMINI_API_KEY to be set")
         return "cheap", build_provider("gemini", settings.gemini_api_key, settings.ai_model or None)
-    raise ValueError(f"unknown AI_PROVIDER {kind!r}; expected off, mock, anthropic, or gemini")
+    if kind == "openai":
+        if not settings.openai_api_key:
+            raise ValueError("AI_PROVIDER=openai requires OPENAI_API_KEY to be set")
+        return "cheap", build_provider("openai", settings.openai_api_key, settings.ai_model or None)
+    raise ValueError(
+        f"unknown AI_PROVIDER {kind!r}; expected off, mock, anthropic, gemini, or openai"
+    )
 
 
 def resolve_provider(db: Session, user_id: uuid.UUID) -> tuple[str, AIProvider | None, str]:
