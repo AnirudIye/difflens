@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.analysis.ai_review import (
+    DEMO_AI_MODEL,
     FINDINGS_SCHEMA,
     MAX_DIFF_CHARS,
     AIProvider,
@@ -123,6 +124,15 @@ def _ai_note(stats: ReviewStats) -> str | None:
         return "The AI reviewer's output was unusable; only deterministic checks ran."
     if stats.ai_truncated:
         return "The AI reviewer's output was cut short; its findings may be incomplete."
+    if stats.ai_model == DEMO_AI_MODEL:
+        # The public demo replays a recorded response. It is not a live
+        # model and must not be presented as one, but it is also not the
+        # empty mock below: it does return findings, so the mock's sentence
+        # would be false here.
+        return (
+            "The AI reviewer in this demo replays a recorded review, so it costs "
+            "nothing and returns the same findings every time."
+        )
     if stats.ai_model == "mock":
         # Last, so a stubbed refusal or garbage response still reports the
         # specific failure. The mock answers with no findings and no error,
@@ -163,7 +173,12 @@ def run_review(job: ReviewJob, provider: AIProvider | None = None) -> ReviewResu
         if job.mode != "deterministic_only":
             note = _ai_note(stats)
             if note:
-                summary = f"{summary} {note}"
+                # The counts sentence has no full stop of its own, so without
+                # this the note runs straight on from it: "...2 low) The AI
+                # reviewer...". Added here rather than in _summarize so the
+                # summary reads the same with or without a note.
+                joiner = " " if summary.endswith((".", "!", "?")) else ". "
+                summary = f"{summary}{joiner}{note}"
 
     stats.tool_versions = _tool_versions()
     if stats.ai_model:

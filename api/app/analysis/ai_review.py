@@ -32,6 +32,11 @@ CATEGORIES: tuple[Category, ...] = (
 )
 CONFIDENCES: tuple[Confidence, ...] = ("high", "medium", "low")
 
+# The model name the public demo reports. The pipeline recognizes it the
+# way it recognizes "mock", so it lives beside the provider port rather than
+# in app/demo/, which would make this pure package depend on that one.
+DEMO_AI_MODEL = "demo"
+
 MAX_TITLE_CHARS = 300
 
 # Above this the AI stage is skipped honestly rather than shipping an
