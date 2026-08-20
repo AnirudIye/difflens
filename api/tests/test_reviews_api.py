@@ -101,6 +101,95 @@ def test_duplicate_live_review_conflicts(client, db, synced_pr, github, doorbell
     assert len(doorbell) == 1
 
 
+def _finish(db, review_id: uuid.UUID, status: str = "completed"):
+    """Land a review and its job in a terminal state, as the worker would."""
+    review = db.get(Review, review_id)
+    job = db.execute(select(ReviewJob).where(ReviewJob.review_id == review.id)).scalar_one()
+    review.status = status
+    job.status = status if status != "superseded" else "completed"
+    db.flush()
+    return review
+
+
+def test_rerun_supersedes_the_finished_review(client, db, synced_pr, github, doorbell):
+    """Re-reviewing the same commit is the whole point: nothing about the PR
+    changed, the reviewer's configuration did."""
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    old = _finish(db, uuid.UUID(first["id"]))
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 201
+    fresh = response.json()
+    assert fresh["id"] != first["id"]
+    assert fresh["status"] == "queued"
+    # Same commit as before: this is a re-review, not a new snapshot
+    assert fresh["head_sha"] == first["head_sha"]
+    assert fresh["pull_request"]["number"] == 41
+    db.refresh(old)
+    assert old.status == "superseded"
+    assert len(db.execute(select(Review.id)).all()) == 2
+    assert len(doorbell) == 2
+
+
+def test_rerun_refuses_while_the_review_is_live(client, db, synced_pr, github, doorbell):
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "review_still_running"
+    db.refresh(db.get(Review, uuid.UUID(first["id"])))
+    assert db.get(Review, uuid.UUID(first["id"])).status == "queued"
+    assert len(db.execute(select(Review.id)).all()) == 1
+    assert len(doorbell) == 1
+
+
+def test_rerun_picks_up_a_moved_head(client, db, synced_pr, github, doorbell):
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    _finish(db, uuid.UUID(first["id"]))
+    moved_head = "f00d" * 10
+    github.pulls[0] = pull_payload(41, "Add login form", moved_head)
+
+    fresh = client.post(f"/reviews/{first['id']}/rerun").json()
+
+    assert fresh["head_sha"] == moved_head
+
+
+def test_rerun_is_owned(client, db, synced_pr, github, make_user_with_session, doorbell):
+    _alice, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    _finish(db, uuid.UUID(first["id"]))
+    _bob, bob_token = make_user_with_session("bob")
+    client.cookies.set("session", bob_token)
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 404
+    assert len(db.execute(select(Review.id)).all()) == 1
+
+
+def test_rerun_requires_auth(client):
+    assert client.post(f"/reviews/{uuid.uuid4()}/rerun").status_code == 401
+
+
+def test_superseded_review_is_still_readable(client, db, synced_pr, github, doorbell):
+    """History must survive: the old review keeps its findings and stays
+    reachable by the link the user may already have."""
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+    _finish(db, uuid.UUID(first["id"]))
+    client.post(f"/reviews/{first['id']}/rerun")
+
+    body = client.get(f"/reviews/{first['id']}")
+
+    assert body.status_code == 200
+    assert body.json()["status"] == "superseded"
+
+
 def test_rerun_allowed_after_failure(client, db, synced_pr, github, doorbell):
     _user, pr = synced_pr
     first = client.post("/reviews", json={"pull_request_id": str(pr.id)})

@@ -184,6 +184,61 @@ def create_review(
     )
 
 
+@router.post("/{review_id}/rerun", status_code=201)
+def rerun_review(
+    review_id: UUID, user: CurrentUser, db: DbSession, client: GitHubDep
+) -> dict[str, Any]:
+    """Review the same pull request again, superseding this finished review."""
+    review = _load_owned_review(db, user, review_id)
+    row = db.execute(
+        select(PullRequest, Repository)
+        .join(Repository, Repository.id == PullRequest.repository_id)
+        .join(UserRepository, UserRepository.repository_id == Repository.id)
+        .where(UserRepository.user_id == user.id, PullRequest.id == review.pull_request_id)
+    ).first()
+    if row is None:
+        raise not_found("Pull request not found")
+    pull, repository = row
+
+    try:
+        fresh, job = review_service.rerun_review(db, user, review, pull, repository, client)
+    except review_service.ReviewStillRunning:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "review_still_running",
+                "message": "This review has not finished yet",
+            },
+        ) from None
+    except GitHubError as exc:
+        raise github_failure(db, user, exc, "Pull request not found") from exc
+    except review_service.PullRequestClosed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pull_request_closed",
+                "message": "This pull request is no longer open on GitHub",
+            },
+        ) from None
+    except review_service.ReviewAlreadyExists as exc:
+        detail: dict[str, str] = {
+            "code": "review_already_exists",
+            "message": "A live review already covers this pull request at this commit",
+        }
+        if exc.review_id is not None:
+            detail["review_id"] = str(exc.review_id)
+        raise HTTPException(status_code=409, detail=detail) from exc
+
+    queue.notify(queue.get_redis(), job.id)
+    return _review_item(
+        fresh,
+        cancel_requested=False,
+        findings=[],
+        verdicts={},
+        pull_context=_pull_context(pull, repository),
+    )
+
+
 @router.get("/{review_id}")
 def get_review(review_id: UUID, user: CurrentUser, db: DbSession) -> dict[str, Any]:
     review = _load_owned_review(db, user, review_id)
