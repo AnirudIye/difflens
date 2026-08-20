@@ -93,19 +93,42 @@ def _fetch_github_identity(code: str) -> tuple[str, str, dict[str, Any]]:
     return access_token, token_payload.get("scope") or "", user_resp.json()
 
 
-@router.get("/github/callback")
-def github_callback(request: Request, code: str, state: str, db: DbSession) -> RedirectResponse:
-    signed_state = request.cookies.get(STATE_COOKIE, "")
-    if not security.verify_state(signed_state, state):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "invalid_state",
-                "message": "OAuth state is missing, expired, or does not match",
-            },
-        )
+def _back_to_login(reason: str) -> RedirectResponse:
+    """Every way this can fail ends on a page, not on a JSON body.
 
-    access_token, scopes, gh_user = _fetch_github_identity(code)
+    A browser lands on this route directly, so an HTTPException renders its
+    error envelope as raw text in the address bar with no way back. Declining
+    on GitHub's consent screen is an ordinary thing to do and has to look
+    like one.
+    """
+    response = RedirectResponse(f"/login?error={reason}", status_code=302)
+    response.delete_cookie(STATE_COOKIE, path="/")
+    return response
+
+
+@router.get("/github/callback")
+def github_callback(
+    request: Request,
+    db: DbSession,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    # GitHub sends error=access_denied with no code when the user says no.
+    # Both are optional here for that reason: a missing code is a decision,
+    # not a malformed request, and 422 is the wrong answer to a decision.
+    if error is not None or code is None:
+        return _back_to_login("cancelled" if error == "access_denied" else "github")
+
+    signed_state = request.cookies.get(STATE_COOKIE, "")
+    if state is None or not security.verify_state(signed_state, state):
+        return _back_to_login("expired")
+
+    try:
+        access_token, scopes, gh_user = _fetch_github_identity(code)
+    except HTTPException:
+        # GitHub refused the code or did not answer; the user can only retry
+        return _back_to_login("github")
     now = datetime.now(UTC)
 
     user = db.execute(select(User).where(User.github_id == gh_user["id"])).scalar_one_or_none()

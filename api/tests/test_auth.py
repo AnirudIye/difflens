@@ -22,6 +22,9 @@ GITHUB_USER = {
 def mock_github(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
+            if b"rejected-code" in request.content:
+                # GitHub answers 200 with an error body, not an error status
+                return httpx.Response(200, json={"error": "bad_verification_code"})
             return httpx.Response(200, json={"access_token": RAW_GITHUB_TOKEN, "scope": ""})
         if request.url.host == "api.github.com" and request.url.path == "/user":
             assert request.headers["Authorization"] == f"Bearer {RAW_GITHUB_TOKEN}"
@@ -71,18 +74,18 @@ def test_login_redirects_to_github_without_scope(client):
     assert response.cookies.get("oauth_state")
 
 
-def test_callback_with_mismatched_state_is_400(client):
+def test_callback_with_mismatched_state_goes_back_to_login(client):
     _start_login(client)
     response = client.get(
         "/auth/github/callback",
         params={"code": "irrelevant", "state": "some-other-state"},
         follow_redirects=False,
     )
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_state"
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=expired"
 
 
-def test_callback_with_tampered_state_cookie_is_400(client):
+def test_callback_with_tampered_state_cookie_goes_back_to_login(client):
     state = _start_login(client)
     signed = client.cookies.get("oauth_state")
     assert signed
@@ -96,8 +99,8 @@ def test_callback_with_tampered_state_cookie_is_400(client):
         params={"code": "irrelevant", "state": state},
         follow_redirects=False,
     )
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_state"
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=expired"
 
 
 def test_full_login_flow(client, db, mock_github):
@@ -149,3 +152,53 @@ def test_expired_session_is_401(client, db):
 
     client.cookies.set("session", token)
     assert client.get("/auth/me").status_code == 401
+
+
+# --- the ways a callback can arrive without a usable code ---
+
+
+def test_declining_on_github_lands_on_the_sign_in_page(client):
+    """Saying no on the consent screen is a decision, not a malformed request.
+
+    GitHub sends error=access_denied and no code at all. A required `code`
+    parameter answered that with a 422 body rendered as raw JSON in the
+    address bar, with no way back into the product.
+    """
+    _start_login(client)
+    response = client.get(
+        "/auth/github/callback",
+        params={"error": "access_denied", "error_description": "The user has denied"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=cancelled"
+
+
+def test_a_callback_with_no_code_at_all_lands_on_the_sign_in_page(client):
+    response = client.get("/auth/github/callback", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=github"
+
+
+def test_github_refusing_the_code_lands_on_the_sign_in_page(client, mock_github):
+    """The token exchange failing is nobody's fault and nothing the user can
+    fix except by trying again, so it says so on a page."""
+    state = _start_login(client)
+    response = client.get(
+        "/auth/github/callback",
+        params={"code": "rejected-code", "state": state},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=github"
+    assert client.cookies.get("session") is None
+
+
+def test_the_state_cookie_is_cleared_on_every_failure(client):
+    _start_login(client)
+    response = client.get(
+        "/auth/github/callback",
+        params={"error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert 'oauth_state=""' in response.headers.get("set-cookie", "")

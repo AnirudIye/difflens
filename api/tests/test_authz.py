@@ -151,15 +151,18 @@ def test_login_redirects_without_a_session(client):
     assert response.headers["location"].startswith("https://github.com/login/oauth/authorize")
 
 
-def test_callback_rejects_a_forged_state_rather_than_asking_for_a_session(client):
+def test_callback_sends_a_forged_state_back_to_sign_in(client):
     client.cookies.clear()
     response = client.get(
         "/auth/github/callback",
         params={"code": "abc", "state": "never-issued"},
         follow_redirects=False,
     )
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_state"
+    # Refused, but on a page: a browser lands on this route directly, so its
+    # failures have to be somewhere a person can act from
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login?error=expired"
+    assert client.cookies.get("session") is None
 
 
 def test_logout_without_a_session_is_a_no_op(client):
