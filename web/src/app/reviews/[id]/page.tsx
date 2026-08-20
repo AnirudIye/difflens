@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<ReviewStatus, string> = {
   completed: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
+  superseded: "Replaced by a newer review",
 };
 
 const SOURCE_LABEL: Record<Finding["source"], string> = {
@@ -90,6 +91,7 @@ export default function ReviewPage() {
   const [stalled, setStalled] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelSent, setCancelSent] = useState(false);
+  const [rerunBusy, setRerunBusy] = useState(false);
   const [busyFindings, setBusyFindings] = useState<ReadonlySet<string>>(
     new Set(),
   );
@@ -257,6 +259,42 @@ export default function ReviewPage() {
     }
   }
 
+  async function rerun(review: Review) {
+    setRerunBusy(true);
+    setNote(null);
+    try {
+      const fresh = await apiFetch<Review>(`/reviews/${review.id}/rerun`, {
+        method: "POST",
+      });
+      router.push(`/reviews/${fresh.id}`);
+      return;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          router.push("/login");
+          return;
+        }
+        if (err.code === "review_already_exists") {
+          const existingId = err.details.review_id;
+          if (typeof existingId === "string") {
+            router.push(`/reviews/${existingId}`);
+            return;
+          }
+        }
+        if (err.code === "pull_request_closed") {
+          setNote("That pull request has closed on GitHub, so it cannot be reviewed again.");
+        } else if (err.code === "review_still_running") {
+          setNote("This review is still going. Wait for it to finish first.");
+        } else {
+          setNote("Starting a new review failed. Try again.");
+        }
+      } else {
+        setNote("Starting a new review failed. Try again.");
+      }
+    }
+    setRerunBusy(false);
+  }
+
   async function cancel(review: Review) {
     setCancelBusy(true);
     setNote(null);
@@ -325,9 +363,11 @@ export default function ReviewPage() {
             stalled={stalled}
             cancelBusy={cancelBusy}
             cancelSent={cancelSent}
+            rerunBusy={rerunBusy}
             busyFindings={busyFindings}
             onRetry={() => setPollEpoch((epoch) => epoch + 1)}
             onCancel={() => void cancel(state.review)}
+            onRerun={() => void rerun(state.review)}
             onFeedback={(finding, verdict) => void giveFeedback(finding, verdict)}
           />
         )}
@@ -342,9 +382,11 @@ function ReviewBody({
   stalled,
   cancelBusy,
   cancelSent,
+  rerunBusy,
   busyFindings,
   onRetry,
   onCancel,
+  onRerun,
   onFeedback,
 }: {
   review: Review;
@@ -352,9 +394,11 @@ function ReviewBody({
   stalled: boolean;
   cancelBusy: boolean;
   cancelSent: boolean;
+  rerunBusy: boolean;
   busyFindings: ReadonlySet<string>;
   onRetry: () => void;
   onCancel: () => void;
+  onRerun: () => void;
   onFeedback: (finding: Finding, verdict: FeedbackVerdict) => void;
 }) {
   const pull = review.pull_request;
@@ -395,7 +439,17 @@ function ReviewBody({
           >
             {cancelling ? "Cancelling..." : "Cancel review"}
           </button>
-        ) : null}
+        ) : review.status === "superseded" ? null : (
+          <button
+            className="button button-quiet"
+            type="button"
+            disabled={rerunBusy}
+            onClick={onRerun}
+            title="Review this commit again, for instance after changing your AI key"
+          >
+            {rerunBusy ? "Starting..." : "Run again"}
+          </button>
+        )}
       </div>
       <p className="review-meta">
         <span className="mono">{review.head_sha.slice(0, 7)}</span>
@@ -469,7 +523,14 @@ function ReviewBody({
         </p>
       ) : null}
 
-      {review.status === "completed" ? (
+      {review.status === "superseded" ? (
+        <p className="muted">
+          A newer review of this pull request has replaced this one. Its
+          findings are kept below as they were.
+        </p>
+      ) : null}
+
+      {review.status === "completed" || review.status === "superseded" ? (
         <>
           {review.summary ? (
             <p className="review-summary">{review.summary}</p>

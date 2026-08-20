@@ -33,7 +33,8 @@ export type ReviewStatus =
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "superseded";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
