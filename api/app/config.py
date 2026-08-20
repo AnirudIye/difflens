@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     frontend_origin: str = "http://localhost:3000"
 
+    # Starting a review is the only call that spends GitHub quota, worker
+    # time, and AI tokens. 0 disables the limit.
+    review_rate_limit: int = 20
+    review_rate_limit_window_s: int = 3600
+
     github_client_id: str = ""
     github_client_secret: str = ""
     session_secret: str = "dev-session-secret-change-me"

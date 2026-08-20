@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app import queue
 from app.deps import CurrentUser, DbSession, GitHubDep
 from app.models import Feedback, Finding, PullRequest, Repository, Review, User, UserRepository
+from app.rate_limit import ReviewRateLimit
 from app.routers.github_errors import github_failure, not_found
 from app.services import review_service
 from app.services.github_client import GitHubError
@@ -139,7 +140,11 @@ def _load_pull_context(db: Session, review: Review) -> dict[str, Any]:
 
 @router.post("", status_code=201)
 def create_review(
-    body: CreateReviewRequest, user: CurrentUser, db: DbSession, client: GitHubDep
+    body: CreateReviewRequest,
+    user: CurrentUser,
+    _limit: ReviewRateLimit,
+    db: DbSession,
+    client: GitHubDep,
 ) -> dict[str, Any]:
     row = db.execute(
         select(PullRequest, Repository)
@@ -186,7 +191,11 @@ def create_review(
 
 @router.post("/{review_id}/rerun", status_code=201)
 def rerun_review(
-    review_id: UUID, user: CurrentUser, db: DbSession, client: GitHubDep
+    review_id: UUID,
+    user: CurrentUser,
+    _limit: ReviewRateLimit,
+    db: DbSession,
+    client: GitHubDep,
 ) -> dict[str, Any]:
     """Review the same pull request again, superseding this finished review."""
     review = _load_owned_review(db, user, review_id)
