@@ -1,0 +1,52 @@
+# Keeps the Render free tier awake so the public demo does not open with a
+# 30 to 60 second cold start.
+#
+# What this does and does not buy:
+# - It keeps the API container running, which also keeps the worker's BRPOP
+#   connection to Upstash alive, so a demo rerun is picked up immediately.
+# - It does NOT keep Neon awake. Neon autosuspends after about five minutes
+#   and wakes in roughly a second, which is invisible next to everything else.
+# - Render's free tier allows 750 instance-hours a month and one always-on
+#   service fits inside that, so pinging every 10 minutes costs nothing.
+#
+# GitHub skips scheduled runs on repositories with no activity for 60 days,
+# and schedules can be delayed under load. Neither matters here: a missed ping
+# costs one cold start, which the demo page already has copy for.
+name: Keep warm
+
+on:
+  schedule:
+    # Every 10 minutes. Free for public repositories.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# Never let two pings queue up behind each other
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the health endpoint
+        env:
+          API_ORIGIN: ${{ vars.API_ORIGIN }}
+        run: |
+          if [ -z "$API_ORIGIN" ]; then
+            echo "API_ORIGIN repository variable is not set; nothing to ping."
+            echo "Set it under Settings > Secrets and variables > Actions > Variables."
+            exit 0
+          fi
+          # --max-time 90 because a cold start is the case this exists for:
+          # the slow request IS the work, so a short timeout would fail the
+          # job precisely when the ping mattered most.
+          code=$(curl --silent --show-error --location \
+            --max-time 90 --retry 2 --retry-delay 10 \
+            --output /dev/null --write-out '%{http_code}' \
+            "$API_ORIGIN/health")
+          echo "GET $API_ORIGIN/health -> $code"
+          test "$code" = "200"
