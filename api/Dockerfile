@@ -14,12 +14,6 @@ FROM python:3.12-slim
 
 WORKDIR /srv
 
-# node is dynamically linked against libstdc++, which the slim Python image
-# does not promise to carry. Two megabytes to make the copy below dependable.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY pyproject.toml ./
 COPY app ./app
 COPY worker ./worker
@@ -29,9 +23,24 @@ RUN pip install --no-cache-dir .
 # After the Python install layer: changing a lint rule should not re-run pip.
 # /srv/eslint-runtime is where the adapter looks, because app/ sits beside it
 # here exactly as it does in the repository.
+#
+# Lifting one binary across two Debian releases is deliberate and checked.
+# The node stage is pinned to bookworm while python:3.12-slim has moved on to
+# trixie, and that direction is the safe one: the official node binary needs
+# at most GLIBC_2.28 and GLIBCXX_3.4.21, both of which every Debian release
+# since bookworm provides, and every library it links (libstdc++, libgcc_s,
+# libm, libc) is already in the python image. Pinning node to the older
+# release keeps it that way, because python:3.12-slim can only move forward.
 COPY --from=eslint /usr/local/bin/node /usr/local/bin/node
 COPY --from=eslint /eslint-runtime /srv/eslint-runtime
 COPY eslint-runtime/eslint.config.mjs /srv/eslint-runtime/eslint.config.mjs
+
+# The assertion that makes the paragraph above maintainable. If either base
+# image ever changes such that node cannot run, or the runtime moves, this
+# fails the build on this line instead of quietly shipping an image whose
+# TypeScript reviews are all "eslint unavailable".
+RUN node --version \
+    && node /srv/eslint-runtime/node_modules/eslint/bin/eslint.js --version
 
 # After the install layer: editing a migration should not re-run pip
 COPY alembic.ini ./

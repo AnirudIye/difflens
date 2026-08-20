@@ -57,6 +57,40 @@ jobs:
       - name: Tests (unit, analysis, authz, integration)
         run: uv run pytest
 
+  image:
+    # The Dockerfile is a deploy artifact and nothing else exercises it: the
+    # backend job runs the code natively, so a broken image reached Render
+    # before anyone noticed. This builds what Render builds, with the same
+    # context, and then proves the two things the build cannot prove about
+    # itself: that the analyzer's runtime resolves inside the image, and that
+    # the app imports under the interpreter the image actually ships.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image Render builds
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api # matches dockerContext in render.yaml
+          file: ./api/Dockerfile
+          load: true
+          tags: difflens-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The ESLint analyzer is reachable from inside the image
+        run: |
+          docker run --rm difflens-api:ci python -c "
+          from app.analysis.analyzers.eslint_adapter import RUNTIME_DIR, eslint_is_available, eslint_version
+          print('runtime dir:', RUNTIME_DIR)
+          assert str(RUNTIME_DIR) == '/srv/eslint-runtime', RUNTIME_DIR
+          assert eslint_is_available(), 'node or the eslint install is missing from the image'
+          print('eslint:', eslint_version())
+          "
+      - name: The app imports and migrations are present
+        run: |
+          docker run --rm difflens-api:ci python -c "import app.main; print('app imports')"
+          docker run --rm difflens-api:ci sh -c "test -f alembic.ini && test -d alembic && echo 'migrations present'"
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
