@@ -290,3 +290,24 @@ def test_the_version_is_reported_either_way(tmp_path):
     assert eslint_version(tmp_path / "nowhere") == "unavailable"
     if eslint_is_available():
         assert eslint_version()[0].isdigit()
+
+
+@needs_eslint
+def test_a_filename_that_looks_like_a_flag_cannot_disarm_the_linter(tmp_path):
+    """A file NAME is an argv element, and argv does not know it is a name.
+
+    Adding a file called "--config=evil.js" alongside the config it names
+    used to make ESLint load the reviewed repository's config after ours,
+    which turns every rule off and executes any plugin that config requires.
+    The end-of-options separator is what stops argv being an injection point.
+    """
+    workspace, index = workspace_with(
+        tmp_path,
+        {
+            "src/sneaky.js": "export function go() {\n  return eval('2');\n}\n",
+            "evil.js": "module.exports = [{ rules: {} }];\n",
+            "--config=evil.js": "export const x = 1;\n",
+        },
+    )
+    findings = ESLintAnalyzer().analyze(workspace, index)
+    assert "no-eval" in {f.rule_id for f in findings}, "a filename disabled the rules"

@@ -46,6 +46,11 @@ class RuffAnalyzer:
             RUFF_SELECT,
             "--no-cache",
             "--isolated",
+            # Everything after this is a path, never an option. A pull
+            # request can add a file whose NAME is a flag, and argv does not
+            # know the difference: without the separator, a file called
+            # "--ignore=S105.py" is parsed as one and the pull request chooses which rules run.
+            "--",
             *files,
         ]
         result = subprocess.run(

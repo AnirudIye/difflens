@@ -204,3 +204,35 @@ def test_run_analyzers_times_out_slow_analyzer(tmp_path):
     assert ran == ["stub"]
     assert len(findings) == 1
     assert "timed out" in skipped["slow"]
+
+
+def test_a_filename_that_looks_like_a_flag_cannot_disarm_ruff(tmp_path):
+    """The same argv injection as the ESLint case, against ruff.
+
+    A pull request that adds a file named "--ignore=S105.py" used to choose
+    which rules ran over the rest of the diff. --isolated stops a config file
+    from doing it; only the end-of-options separator stops a file name.
+    """
+    from app.analysis.analyzers.ruff_adapter import RuffAnalyzer
+    from app.analysis.diffs.parser import build_diff_index
+
+    files = {
+        "app/bug.py": 'import subprocess\napi_token = "hunter2"\n',
+        "--ignore=S105.py": "x = 1\n",
+    }
+    chunks = []
+    for rel, content in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+        lines = content.rstrip("\n").split("\n")
+        chunks.append(
+            f"diff --git a/{rel} b/{rel}\n"
+            "index 1111111..2222222 100644\n"
+            f"--- a/{rel}\n+++ b/{rel}\n"
+            f"@@ -1,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines)
+        )
+    index = build_diff_index("".join(chunks))
+
+    findings = RuffAnalyzer().analyze(tmp_path, index)
+    assert "S105" in {f.rule_id for f in findings}, "a filename suppressed a rule"

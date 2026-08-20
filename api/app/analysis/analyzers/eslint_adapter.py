@@ -112,6 +112,13 @@ class ESLintAnalyzer:
             # A changed file inside an ignored directory is skipped quietly
             # rather than reported as a warning carrying no rule
             "--no-warn-ignored",
+            # Everything after this is a path, never an option. A pull
+            # request can add a file whose NAME is a flag, and argv cannot
+            # tell the difference: without the separator, a file called
+            # "--config=evil.js" is parsed as one, so the reviewed
+            # repository's own config loads after ours and any plugin it
+            # names is executed inside the reviewer.
+            "--",
             *files,
         ]
         result = subprocess.run(
