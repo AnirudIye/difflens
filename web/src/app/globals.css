@@ -806,6 +806,11 @@ body {
 @media (max-width: 26rem) {
   .theme-toggle-label {
     position: absolute;
+    /* min-width above wins over width below, so without this the "hidden"
+       label is still 3.25rem wide and, being absolutely positioned, hangs
+       past the header and forces the horizontal scroll this rule exists to
+       prevent */
+    min-width: 0;
     width: 1px;
     height: 1px;
     padding: 0;
