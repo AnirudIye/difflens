@@ -50,6 +50,43 @@ export default function SettingsPage() {
     void load();
   }, [load]);
 
+  // 10 characters is the API's own floor, so the form refuses what the
+  // server would refuse rather than making a round trip to hear it
+  const typed = apiKey.trim().length > 0;
+  const tooShort = apiKey.trim().length < 10;
+
+  /** A session that ran out mid-edit is not a server failure; go and sign in. */
+  function expired(err: unknown): boolean {
+    if (err instanceof ApiError && err.status === 401) {
+      router.push("/login");
+      return true;
+    }
+    return false;
+  }
+
+  /** Say which field the API rejected instead of guessing from the status.
+   *
+   * The form already refuses a short key, so a 422 reaching here is almost
+   * always about a different field. Blaming the key for a model name that is
+   * too long sends the user to re-paste a key that was never the problem.
+   */
+  function rejectionMessage(err: unknown): string {
+    if (!(err instanceof ApiError) || err.status !== 422) {
+      return "Saving failed. Try again.";
+    }
+    const fields = err.details.fields;
+    const named = Array.isArray(fields)
+      ? (fields as { field?: string }[]).map((item) => item.field)
+      : [];
+    if (named.includes("model")) {
+      return "That model name is too long. Leave it blank for the provider default.";
+    }
+    if (named.includes("provider")) {
+      return "Pick one of the providers listed above.";
+    }
+    return "That key looks too short. Paste the full key.";
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -67,11 +104,10 @@ export default function SettingsPage() {
       setApiKey("");
       setMessage("Saved. Reviews you start now run on your key.");
     } catch (err) {
-      setMessage(
-        err instanceof ApiError && err.status === 422
-          ? "That key looks too short. Paste the full key."
-          : "Saving failed. Try again.",
-      );
+      if (expired(err)) {
+        return;
+      }
+      setMessage(rejectionMessage(err));
     } finally {
       setBusy(false);
     }
@@ -87,7 +123,10 @@ export default function SettingsPage() {
       setStatus(data);
       setModel("");
       setMessage("Removed. Reviews fall back to the server's reviewer.");
-    } catch {
+    } catch (err) {
+      if (expired(err)) {
+        return;
+      }
       setMessage("Removing failed. Try again.");
     } finally {
       setBusy(false);
@@ -194,20 +233,28 @@ export default function SettingsPage() {
               <input
                 id="ai-model"
                 type="text"
+                // The API's own ceiling, enforced here so a paste that is
+                // obviously wrong never becomes a round trip
+                maxLength={100}
                 placeholder={`Provider default (${DEFAULT_MODELS[provider]})`}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
             </div>
             <div className="form-row">
-              <button
-                className="button"
-                type="submit"
-                disabled={busy || apiKey.trim().length < 10}
-              >
+              <button className="button" type="submit" disabled={busy || tooShort}>
                 Save key
               </button>
-              {message ? <p className="muted">{message}</p> : null}
+              {message ? (
+                <p className="muted">{message}</p>
+              ) : typed && tooShort ? (
+                // Without this the button is simply dead and never says why,
+                // which is exactly what a half-pasted key looks like
+                <p className="muted">
+                  That is shorter than any provider&apos;s key. Paste the whole
+                  thing.
+                </p>
+              ) : null}
             </div>
           </form>
         </section>
