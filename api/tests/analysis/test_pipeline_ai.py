@@ -173,6 +173,41 @@ def test_deterministic_summary_never_carries_an_ai_note():
     assert "AI reviewer" not in result.summary
 
 
+def test_mock_provider_is_visible_in_the_summary():
+    """The mock answers with no findings and no error, so without this note a
+    review that had no AI at all looks exactly like a clean AI pass."""
+    result = run_review(make_job("python_buggy", mode="cheap"), provider=MockProvider())
+
+    assert result.stats.ai_model == "mock"
+    assert result.stats.ai_refused is False
+    assert result.stats.ai_parse_failed is False
+    assert "No AI reviewer is configured" in result.summary
+
+
+def test_a_real_model_carries_no_degradation_note():
+    class RealProvider:
+        def review(self, request: AIRequest) -> AIResponse:
+            return AIResponse(
+                raw_text=json.dumps({"findings": [ai_candidate()]}),
+                refused=False,
+                model="gemini-3.6-flash",
+            )
+
+    result = run_review(make_job("python_buggy", mode="cheap"), provider=RealProvider())
+
+    assert result.stats.ai_model == "gemini-3.6-flash"
+    assert "No AI reviewer is configured" not in result.summary
+    assert "only deterministic checks ran" not in result.summary
+
+
+def test_mock_note_never_masks_a_specific_failure():
+    refused = run_review(
+        make_job("python_buggy", mode="cheap"), provider=MockProvider(refused=True)
+    )
+    assert "AI reviewer declined" in refused.summary
+    assert "No AI reviewer is configured" not in refused.summary
+
+
 def test_nonce_is_random_per_review():
     import re
 

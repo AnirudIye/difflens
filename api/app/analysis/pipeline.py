@@ -119,6 +119,11 @@ def _ai_note(stats: ReviewStats) -> str | None:
         return "The AI reviewer's output was unusable; only deterministic checks ran."
     if stats.ai_truncated:
         return "The AI reviewer's output was cut short; its findings may be incomplete."
+    if stats.ai_model == "mock":
+        # Last, so a stubbed refusal or garbage response still reports the
+        # specific failure. The mock answers with no findings and no error,
+        # which would otherwise be indistinguishable from a clean AI pass
+        return "No AI reviewer is configured, so only deterministic checks ran."
     return None
 
 
