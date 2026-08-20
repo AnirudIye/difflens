@@ -88,7 +88,7 @@ export type Review = {
 
 export type AIKeyStatus = {
   configured: boolean;
-  provider: "anthropic" | "gemini" | null;
+  provider: "anthropic" | "gemini" | "openai" | null;
   model: string | null;
   key_hint: string | null;
   key_invalid: boolean;

@@ -7,16 +7,19 @@ import { ApiError, apiFetch } from "@/lib/api";
 import type { AIKeyStatus } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
 
-const DEFAULT_MODELS: Record<"gemini" | "anthropic", string> = {
+type Provider = "gemini" | "anthropic" | "openai";
+
+const DEFAULT_MODELS: Record<Provider, string> = {
   gemini: "gemini-3.6-flash",
   anthropic: "claude-opus-5",
+  openai: "gpt-5.6-terra",
 };
 
 export default function SettingsPage() {
   const router = useRouter();
   const me = useMe();
   const [status, setStatus] = useState<AIKeyStatus | null>(null);
-  const [provider, setProvider] = useState<"gemini" | "anthropic">("gemini");
+  const [provider, setProvider] = useState<Provider>("gemini");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -160,12 +163,11 @@ export default function SettingsPage() {
               <select
                 id="ai-provider"
                 value={provider}
-                onChange={(e) =>
-                  setProvider(e.target.value as "gemini" | "anthropic")
-                }
+                onChange={(e) => setProvider(e.target.value as Provider)}
               >
                 <option value="gemini">Gemini</option>
                 <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
               </select>
             </div>
             <div className="field">
