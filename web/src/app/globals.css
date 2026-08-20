@@ -164,7 +164,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  /* Wrapping matters: without it a narrow screen pushes Settings and Sign
+     out past the right edge, which hides them as effectively as deleting them */
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
   padding: 0.875rem 1.5rem;
   border-bottom: 1px solid var(--rule);
 }
