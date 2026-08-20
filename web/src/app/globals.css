@@ -1,4 +1,10 @@
+/* Light is the base palette. Dark is applied twice on purpose: once for a
+   user whose OS asks for it and who has not overridden it, and once for a
+   user who picked dark explicitly. The :not() guard is what lets an explicit
+   light choice win on a dark OS. */
+
 :root {
+  color-scheme: light;
   --paper: #f7f6f2;
   --ink: #1a1916;
   --ink-soft: #605c53;
@@ -9,10 +15,13 @@
   --sev-medium: #8a6a00;
   --sev-low: #605c53;
   --sev-info: #605c53;
+  --overlay: rgb(0 0 0 / 0.45);
+  --lift: 0 6px 24px rgb(0 0 0 / 0.14);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --paper: #131210;
     --ink: #eceae4;
     --ink-soft: #97938a;
@@ -23,7 +32,25 @@
     --sev-medium: #d9c26a;
     --sev-low: #97938a;
     --sev-info: #97938a;
+    --overlay: rgb(0 0 0 / 0.6);
+    --lift: 0 6px 24px rgb(0 0 0 / 0.5);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #131210;
+  --ink: #eceae4;
+  --ink-soft: #97938a;
+  --accent: #4ac26b;
+  --rule: #29271f;
+  --sev-critical: #f97066;
+  --sev-high: #f7b27a;
+  --sev-medium: #d9c26a;
+  --sev-low: #97938a;
+  --sev-info: #97938a;
+  --overlay: rgb(0 0 0 / 0.6);
+  --lift: 0 6px 24px rgb(0 0 0 / 0.5);
 }
 
 *,
@@ -170,6 +197,21 @@ body {
   gap: 0.5rem 1rem;
   padding: 0.875rem 1.5rem;
   border-bottom: 1px solid var(--rule);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+/* The three pages without a header (landing, sign in, 404) park the theme
+   control here instead, at the coordinates the header would have put it. */
+.corner-actions {
+  position: fixed;
+  top: 0.875rem;
+  right: 1.5rem;
+  z-index: 10;
 }
 
 .brand {
@@ -663,7 +705,7 @@ body {
   border-radius: 8px;
   /* The menu floats over page content, so it needs its own elevation
      rather than borrowing the paper it sits on */
-  box-shadow: 0 6px 24px rgb(0 0 0 / 0.14);
+  box-shadow: var(--lift);
   display: flex;
   flex-direction: column;
 }
@@ -696,6 +738,65 @@ body {
   color: var(--sev-critical);
 }
 
+/* Theme toggle */
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  padding: 0.375rem 0.625rem;
+  background: var(--paper);
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-toggle svg {
+  flex: none;
+}
+
+.theme-toggle-label {
+  /* Naming the current mode is what stops a cycling control from being
+     ambiguous about whether its icon means "now" or "next" */
+  min-width: 3.25rem;
+  text-align: left;
+}
+
+/* Below this the word costs more than it explains: brand plus toggle plus
+   account menu stops fitting on one line and the header spills off the right
+   edge, which is how the navigation went missing once already. The icon
+   changes with the mode and the accessible name still says both the current
+   mode and the next one. */
+@media (max-width: 26rem) {
+  .theme-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .theme-toggle {
+    padding: 0.375rem 0.5rem;
+  }
+}
+
 /* Confirmation dialog */
 
 .confirm {
@@ -710,7 +811,7 @@ body {
 }
 
 .confirm::backdrop {
-  background: rgb(0 0 0 / 0.45);
+  background: var(--overlay);
 }
 
 .confirm-panel {

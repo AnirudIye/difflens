@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import Mark from "@/components/Mark";
+import ThemeToggle from "@/components/ThemeToggle";
 import UserMenu from "@/components/UserMenu";
 import type { MeState } from "@/lib/useMe";
 
@@ -24,7 +25,12 @@ export default function Header({
         <Mark size={22} />
         <span className="brand-name">DiffLens</span>
       </Link>
-      {showNav ? <UserMenu user={user} onSignOut={onSignOut} /> : null}
+      <div className="header-actions">
+        {/* Theme is a device preference, not session state, so it stays
+            put whether or not we know who is signed in */}
+        <ThemeToggle />
+        {showNav ? <UserMenu user={user} onSignOut={onSignOut} /> : null}
+      </div>
     </header>
   );
 }
