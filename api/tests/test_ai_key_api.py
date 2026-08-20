@@ -13,6 +13,7 @@ from app.ai.factory import resolve_provider
 from app.ai.gemini_provider import GeminiProvider
 from app.ai.mock import MockProvider
 from app.models import UserAIKey
+from app.security import decrypt_token
 
 GEMINI_KEY = "AIzaFakeTestKey1234"
 
@@ -112,9 +113,11 @@ def test_delete_removes_the_key_and_is_idempotent(client, db, make_user_with_ses
 
 def test_put_rejects_unknown_provider_and_short_keys(client, make_user_with_session):
     make_user_with_session("alice")
+    # "openai" is a supported provider now, so the unknown case needs a
+    # vendor the app really does not have an adapter for
     assert (
         client.put(
-            "/settings/ai-key", json={"provider": "openai", "api_key": GEMINI_KEY}
+            "/settings/ai-key", json={"provider": "cohere", "api_key": GEMINI_KEY}
         ).status_code
         == 422
     )
@@ -230,3 +233,44 @@ def test_resolve_reports_none_when_ai_is_off(client, db, make_user_with_session,
     assert mode == "deterministic_only"
     assert provider is None
     assert source == "none"
+
+
+def test_put_accepts_openai_and_persists_it(client, db, make_user_with_session):
+    """The provider column is CHECK-constrained, so a new provider that the
+    API accepts but the database rejects would 500 at commit."""
+    user, _ = make_user_with_session("alice")
+
+    response = client.put(
+        "/settings/ai-key",
+        json={"provider": "openai", "api_key": "sk-proj-not-a-real-key-000042"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configured"] is True
+    assert body["provider"] == "openai"
+    assert body["key_hint"] == "0042"
+    assert "sk-proj" not in json.dumps(body)  # the plaintext key never comes back
+
+    row = db.execute(select(UserAIKey).where(UserAIKey.user_id == user.id)).scalar_one()
+    assert row.provider == "openai"
+    assert decrypt_token(row.key_enc) == "sk-proj-not-a-real-key-000042"
+
+
+def test_resolve_builds_an_openai_provider_from_a_stored_key(client, db, make_user_with_session):
+    """A stored provider string that build_provider does not recognise would
+    raise at review time, in the worker, long after the key looked saved."""
+    from app.ai.openai_provider import OpenAIProvider
+
+    user, _ = make_user_with_session("alice")
+    client.put(
+        "/settings/ai-key",
+        json={"provider": "openai", "api_key": "sk-proj-not-a-real-key-000042"},
+    )
+
+    mode, provider, source = resolve_provider(db, user.id)
+
+    assert mode == "cheap"
+    assert source == "user"
+    assert isinstance(provider, OpenAIProvider)
+    assert provider.model == "gpt-5.6-terra"  # provider default when none stored

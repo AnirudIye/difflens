@@ -89,7 +89,10 @@ class UserAIKey(Base):
     __tablename__ = "user_ai_keys"
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_user_ai_keys_user_id"),
-        CheckConstraint("provider IN ('anthropic', 'gemini')", name="ck_user_ai_keys_provider"),
+        CheckConstraint(
+            "provider IN ('anthropic', 'gemini', 'openai')",
+            name="ck_user_ai_keys_provider",
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()

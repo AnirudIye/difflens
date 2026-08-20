@@ -20,7 +20,7 @@ router = APIRouter(prefix="/settings")
 
 
 class PutAIKeyRequest(BaseModel):
-    provider: Literal["anthropic", "gemini"]
+    provider: Literal["anthropic", "gemini", "openai"]
     api_key: str = Field(min_length=10, max_length=512)
     model: str | None = Field(default=None, max_length=100)
 
