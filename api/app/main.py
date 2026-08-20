@@ -4,6 +4,7 @@ from http import HTTPStatus
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -12,6 +13,33 @@ from app.logging_setup import setup_logging
 from app.routers import ai_settings, auth, findings, health, repositories, reviews
 
 log = structlog.get_logger()
+
+# Where in the request the value came from. Pydantic puts it first in loc;
+# it is context, not part of the field name the caller recognises.
+_LOCATIONS = frozenset({"body", "query", "path", "header", "cookie"})
+
+# Long enough to name several bad fields, short enough that a hostile body
+# full of unknown keys cannot turn one 422 into a payload
+MAX_VALIDATION_MESSAGE_CHARS = 300
+
+
+def _field_name(loc: tuple[object, ...]) -> str:
+    parts = list(loc)
+    if parts and parts[0] in _LOCATIONS:
+        parts = parts[1:]
+    return ".".join(str(part) for part in parts) or "body"
+
+
+def cap(message: str, limit: int = MAX_VALIDATION_MESSAGE_CHARS) -> str:
+    """Bound the sentence, whatever the request did to earn it.
+
+    Today's models are small enough that nothing reaches the limit, which is
+    exactly why this is a function with its own test: the cap has to still be
+    there when a model with fifty fields arrives.
+    """
+    if len(message) <= limit:
+        return message
+    return message[: limit - 3] + "..."
 
 
 def create_app() -> FastAPI:
@@ -35,6 +63,31 @@ def create_app() -> FastAPI:
         )
         response.headers["X-Request-ID"] = request_id
         return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_envelope(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Give schema rejections the same envelope as every other error.
+
+        FastAPI's own 422 body is a bare list under "detail", which the
+        frontend cannot read, and it echoes the offending "input" back. That
+        input is sometimes a half-typed API key, so it is dropped here rather
+        than returned and written to the access log.
+        """
+        fields = [
+            {"field": _field_name(error["loc"]), "message": error["msg"]} for error in exc.errors()
+        ]
+        message = cap("; ".join(f"{field['field']}: {field['message']}" for field in fields))
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "invalid_request",
+                    "message": message or "The request did not match the expected shape",
+                    "fields": fields,
+                    "request_id": getattr(request.state, "request_id", None),
+                }
+            },
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def error_envelope(request: Request, exc: StarletteHTTPException) -> JSONResponse:
