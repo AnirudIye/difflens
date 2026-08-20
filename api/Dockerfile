@@ -10,7 +10,7 @@ COPY eslint-runtime/package.json eslint-runtime/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /srv
 
