@@ -109,6 +109,14 @@ class Repository(Base):
     __table_args__ = (
         UniqueConstraint("github_id", name="uq_repositories_github_id"),
         UniqueConstraint("full_name", name="uq_repositories_full_name"),
+        # At most one demo repository: only is_demo rows are indexed and they
+        # all hold the same value, so uniqueness caps the set at one
+        Index(
+            "uq_repositories_single_demo",
+            "is_demo",
+            unique=True,
+            postgresql_where=text("is_demo"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -120,6 +128,9 @@ class Repository(Base):
     default_branch: Mapped[str | None]
     html_url: Mapped[str | None]
     last_synced_at: Mapped[datetime | None]
+    # The public demo's repository. Nothing about it is fetched from GitHub,
+    # and the worker checks this before it looks for a token.
+    is_demo: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = created_now()
     updated_at: Mapped[datetime] = created_now()
 
