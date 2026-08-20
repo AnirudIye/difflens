@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- The Mark, with literal colours: a favicon is served on its own and has
+       no page to inherit CSS variables from. -->
+  <circle cx="20" cy="20" r="13" stroke="#1a1916" stroke-width="3" />
+  <line x1="30.5" y1="30.5" x2="40" y2="40" stroke="#1a1916" stroke-width="3" stroke-linecap="round" />
+  <line x1="14" y1="16.5" x2="26" y2="16.5" stroke="#1a7f37" stroke-width="3" stroke-linecap="round" />
+  <line x1="14" y1="23.5" x2="22" y2="23.5" stroke="#1a1916" stroke-width="3" stroke-linecap="round" opacity="0.45" />
+</svg>
