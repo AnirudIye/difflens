@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { AIKeyStatus } from "@/lib/types";
@@ -23,6 +24,7 @@ export default function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -92,6 +94,7 @@ export default function SettingsPage() {
       setMessage("Removing failed. Try again.");
     } finally {
       setBusy(false);
+      setConfirmRemove(false);
     }
   }
 
@@ -147,7 +150,7 @@ export default function SettingsPage() {
               <button
                 className="button button-quiet"
                 type="button"
-                onClick={() => void remove()}
+                onClick={() => setConfirmRemove(true)}
                 disabled={busy}
               >
                 Remove key
@@ -212,6 +215,21 @@ export default function SettingsPage() {
           </form>
         </section>
       </main>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        title="Remove your API key?"
+        body={
+          "The stored key is deleted and cannot be recovered. Reviews you " +
+          "start will fall back to the server's reviewer until you paste a " +
+          "key again."
+        }
+        confirmLabel="Remove key"
+        destructive
+        busy={busy}
+        onConfirm={() => void remove()}
+        onCancel={() => setConfirmRemove(false)}
+      />
     </div>
   );
 }

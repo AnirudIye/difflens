@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
@@ -92,6 +93,7 @@ export default function ReviewPage() {
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelSent, setCancelSent] = useState(false);
   const [rerunBusy, setRerunBusy] = useState(false);
+  const [confirming, setConfirming] = useState<"cancel" | "rerun" | null>(null);
   const [busyFindings, setBusyFindings] = useState<ReadonlySet<string>>(
     new Set(),
   );
@@ -287,6 +289,7 @@ export default function ReviewPage() {
       }
     }
     setRerunBusy(false);
+    setConfirming(null);
   }
 
   async function cancel(review: Review) {
@@ -311,6 +314,7 @@ export default function ReviewPage() {
       // review_finished: the next poll shows the final state
     } finally {
       setCancelBusy(false);
+      setConfirming(null);
     }
   }
 
@@ -360,12 +364,43 @@ export default function ReviewPage() {
             rerunBusy={rerunBusy}
             busyFindings={busyFindings}
             onRetry={() => setPollEpoch((epoch) => epoch + 1)}
-            onCancel={() => void cancel(state.review)}
-            onRerun={() => void rerun(state.review)}
+            onCancel={() => setConfirming("cancel")}
+            onRerun={() => setConfirming("rerun")}
             onFeedback={(finding, verdict) => void giveFeedback(finding, verdict)}
           />
         )}
       </main>
+
+      <ConfirmDialog
+        open={confirming === "cancel"}
+        title="Stop this review?"
+        body={
+          "The worker stops as soon as it reaches its next checkpoint, and " +
+          "no findings are kept. You can run the review again afterwards."
+        }
+        confirmLabel="Stop review"
+        cancelLabel="Keep going"
+        destructive
+        busy={cancelBusy}
+        onConfirm={() =>
+          state.kind === "ready" ? void cancel(state.review) : undefined
+        }
+        onCancel={() => setConfirming(null)}
+      />
+      <ConfirmDialog
+        open={confirming === "rerun"}
+        title="Review this commit again?"
+        body={
+          "This review is replaced by a new one. Its findings stay readable, " +
+          "but it stops being the current review for this pull request."
+        }
+        confirmLabel="Run again"
+        busy={rerunBusy}
+        onConfirm={() =>
+          state.kind === "ready" ? void rerun(state.review) : undefined
+        }
+        onCancel={() => setConfirming(null)}
+      />
     </div>
   );
 }
