@@ -39,11 +39,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: api/eslint-runtime/package-lock.json
+      # The ESLint analyzer shells out to this install. Without it the
+      # TypeScript tests skip themselves rather than fail, which would hide
+      # a broken adapter, so CI always provides it.
+      - name: Install the ESLint analyzer runtime
+        run: npm ci --omit=dev --no-audit --no-fund
+        working-directory: api/eslint-runtime
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - run: uv run pytest
+      - name: Tests (unit, analysis, authz, integration)
+        run: uv run pytest
 
   frontend:
     runs-on: ubuntu-latest

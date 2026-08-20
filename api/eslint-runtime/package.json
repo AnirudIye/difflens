@@ -1,0 +1,13 @@
+{
+  "name": "difflens-eslint-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ESLint and its parser, installed for the analyzer to shell out to. Not part of the web app.",
+  "license": "MIT",
+  "dependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "typescript-eslint": "^8.18.0"
+  }
+}

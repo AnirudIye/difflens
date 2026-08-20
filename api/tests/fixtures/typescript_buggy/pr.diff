@@ -1,0 +1,54 @@
+diff --git a/src/cart.ts b/src/cart.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/cart.ts
+@@ -0,0 +1,25 @@
++export type CartLine = { sku: string; quantity: number; price: number };
++
++const TAX_RATES = {
++  standard: 0.2,
++  reduced: 0.05,
++  standard: 0.15,
++};
++
++export function isNumeric(value: unknown): boolean {
++  return typeof value === "nubmer";
++}
++
++export function total(lines: CartLine[]): number {
++  const pendingDiscount = 0.1;
++  let sum = 0;
++  for (const line of lines) {
++    sum += line.price * line.quantity;
++  }
++  return sum;
++  sum = sum * (1 + TAX_RATES.standard);
++}
++
++export function evaluatePromo(expression: string): number {
++  return eval(expression);
++}
+diff --git a/scripts/report.js b/scripts/report.js
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/scripts/report.js
+@@ -0,0 +1,6 @@
++function summarize(rows) {
++  const amounts = rows.map((row) => row.amount);
++  return amounts.reduce((running, amount) => running + amount, initialValue);
++}
++
++module.exports = { summarize };
+diff --git a/src/__tests__/cart.test.ts b/src/__tests__/cart.test.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/__tests__/cart.test.ts
+@@ -0,0 +1,5 @@
++import { total } from "../cart";
++
++test("total sums the lines", () => {
++  expect(total([{ sku: "a", quantity: 2, price: 3 }])).toBe(6);
++});

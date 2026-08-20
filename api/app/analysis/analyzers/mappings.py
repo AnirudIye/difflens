@@ -40,6 +40,48 @@ RUFF_PREFIX: dict[str, RuleMapping] = {
 
 RUFF_DEFAULT: RuleMapping = ("medium", "maintainability", "medium")
 
+# ESLint rule ids are words, not codes, so there is no prefix hierarchy to
+# lean on the way ruff's has. The table stays short on purpose: only rules
+# that eslint-runtime/eslint.config.mjs turns on can ever appear here.
+ESLINT_EXACT: dict[str, RuleMapping] = {
+    # a file that will not parse is not a style opinion
+    "parse-error": ("critical", "correctness", "high"),
+    "no-undef": ("high", "correctness", "high"),
+    "no-dupe-keys": ("high", "correctness", "high"),
+    "no-dupe-args": ("high", "correctness", "high"),
+    "no-dupe-class-members": ("high", "correctness", "high"),
+    "no-duplicate-case": ("high", "correctness", "high"),
+    "no-unreachable": ("high", "correctness", "high"),
+    "valid-typeof": ("high", "correctness", "high"),
+    "no-unsafe-negation": ("high", "correctness", "high"),
+    "no-unsafe-optional-chaining": ("high", "correctness", "high"),
+    "use-isnan": ("high", "correctness", "high"),
+    "no-self-assign": ("medium", "correctness", "high"),
+    "no-self-compare": ("medium", "correctness", "high"),
+    "no-cond-assign": ("medium", "correctness", "medium"),
+    "no-constant-condition": ("medium", "correctness", "medium"),
+    "no-sparse-arrays": ("medium", "correctness", "medium"),
+    "no-fallthrough": ("medium", "correctness", "medium"),
+    "no-compare-neg-zero": ("medium", "correctness", "high"),
+    "no-async-promise-executor": ("medium", "correctness", "high"),
+    "no-promise-executor-return": ("medium", "correctness", "medium"),
+    "no-unmodified-loop-condition": ("medium", "correctness", "medium"),
+    "require-atomic-updates": ("medium", "correctness", "medium"),
+    # the eval family: arbitrary code built from a string
+    "no-eval": ("high", "security", "high"),
+    "no-implied-eval": ("high", "security", "high"),
+    "no-new-func": ("high", "security", "high"),
+    "no-script-url": ("high", "security", "high"),
+    "no-unused-vars": ("low", "maintainability", "high"),
+    # The typescript-eslint replacements, which run in place of the base
+    # rules on .ts files because the base ones misread TypeScript syntax
+    "@typescript-eslint/no-unused-vars": ("low", "maintainability", "high"),
+    "@typescript-eslint/no-dupe-class-members": ("high", "correctness", "high"),
+    "no-debugger": ("low", "maintainability", "high"),
+}
+
+ESLINT_DEFAULT: RuleMapping = ("medium", "correctness", "medium")
+
 # these match known token shapes; everything else in detect-secrets is an
 # entropy or keyword guess and gets one notch less confidence
 STRUCTURED_SECRET_DETECTORS = {
@@ -61,6 +103,10 @@ def map_ruff(code: str) -> RuleMapping:
         if code.startswith(prefix) and len(prefix) > len(best):
             best = prefix
     return RUFF_PREFIX[best] if best else RUFF_DEFAULT
+
+
+def map_eslint(rule_id: str) -> RuleMapping:
+    return ESLINT_EXACT.get(rule_id, ESLINT_DEFAULT)
 
 
 def secret_confidence(detector: str) -> Confidence:

@@ -1,0 +1,74 @@
+[
+  {
+    "file_path": "scripts/report.js",
+    "start_line": 3,
+    "end_line": 3,
+    "severity": "high",
+    "category": "correctness",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "no-undef",
+    "tool": "eslint",
+    "title": "no-undef: 'initialValue' is not defined."
+  },
+  {
+    "file_path": "src/cart.ts",
+    "start_line": 6,
+    "end_line": 6,
+    "severity": "high",
+    "category": "correctness",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "no-dupe-keys",
+    "tool": "eslint",
+    "title": "no-dupe-keys: Duplicate key 'standard'."
+  },
+  {
+    "file_path": "src/cart.ts",
+    "start_line": 10,
+    "end_line": 10,
+    "severity": "high",
+    "category": "correctness",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "valid-typeof",
+    "tool": "eslint",
+    "title": "valid-typeof: Invalid typeof comparison value."
+  },
+  {
+    "file_path": "src/cart.ts",
+    "start_line": 20,
+    "end_line": 20,
+    "severity": "high",
+    "category": "correctness",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "no-unreachable",
+    "tool": "eslint",
+    "title": "no-unreachable: Unreachable code."
+  },
+  {
+    "file_path": "src/cart.ts",
+    "start_line": 24,
+    "end_line": 24,
+    "severity": "high",
+    "category": "security",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "no-eval",
+    "tool": "eslint",
+    "title": "no-eval: eval can be harmful."
+  },
+  {
+    "file_path": "src/cart.ts",
+    "start_line": 14,
+    "end_line": 14,
+    "severity": "low",
+    "category": "maintainability",
+    "confidence": "high",
+    "source": "deterministic",
+    "rule_id": "@typescript-eslint/no-unused-vars",
+    "tool": "eslint",
+    "title": "@typescript-eslint/no-unused-vars: 'pendingDiscount' is assigned a value but never used."
+  }
+]

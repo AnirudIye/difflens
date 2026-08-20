@@ -21,6 +21,7 @@ from app.analysis.ai_review import (
     validate_candidates,
 )
 from app.analysis.analyzers.base import run_analyzers
+from app.analysis.analyzers.eslint_adapter import ESLintAnalyzer, eslint_version
 from app.analysis.analyzers.ruff_adapter import RuffAnalyzer
 from app.analysis.analyzers.secrets_adapter import SecretsAnalyzer
 from app.analysis.analyzers.test_detector import TestDetector
@@ -72,6 +73,9 @@ def _tool_versions() -> dict[str, str]:
         "ruff": ruff or "unknown",
         # detect_secrets 1.5.0 ships no __version__ attribute
         "detect-secrets": importlib.metadata.version("detect-secrets"),
+        # Always present, even when it is "unavailable": which tools could
+        # have run is as much a part of a review's provenance as which did
+        "eslint": eslint_version(),
         "python": platform.python_version(),
     }
 
@@ -140,7 +144,7 @@ def run_review(job: ReviewJob, provider: AIProvider | None = None) -> ReviewResu
             raise AnalysisError(f"could not parse diff: {exc}") from exc
 
     with _timed(stats, "analyze"):
-        analyzers = [RuffAnalyzer(), SecretsAnalyzer(), TestDetector()]
+        analyzers = [RuffAnalyzer(), SecretsAnalyzer(), TestDetector(), ESLintAnalyzer()]
         findings, stats.analyzers_run, stats.analyzers_skipped = run_analyzers(
             analyzers, job.workspace, index
         )

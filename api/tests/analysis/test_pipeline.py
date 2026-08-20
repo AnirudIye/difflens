@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.analysis.analyzers.eslint_adapter import eslint_is_available
 from app.analysis.models import ReviewJob, ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
 
@@ -57,6 +58,17 @@ def test_fixture_matches_golden(fixture):
     assert normalize(result) == golden(fixture)
 
 
+@pytest.mark.skipif(
+    not eslint_is_available(),
+    reason="node and eslint-runtime/node_modules are required; run npm ci in api/eslint-runtime",
+)
+def test_typescript_fixture_matches_golden():
+    """Its own test because, unlike the others, it needs Node installed."""
+    result = run_review(make_job("typescript_buggy"))
+    assert normalize(result) == golden("typescript_buggy")
+    assert result.summary == "6 findings across 2 files (5 high, 1 low)"
+
+
 def test_clean_pr_gets_the_clean_summary():
     result = run_review(make_job("clean"))
     assert result.summary == "No findings. The changed code passes all deterministic checks."
@@ -86,7 +98,7 @@ def test_stats_sanity():
     assert stats.findings_before_dedup == 6
     assert stats.findings_after_dedup == 6
     assert stats.truncated is False
-    assert set(stats.tool_versions) == {"ruff", "detect-secrets", "python"}
+    assert set(stats.tool_versions) == {"ruff", "detect-secrets", "eslint", "python"}
 
 
 def test_secret_value_never_leaks():
