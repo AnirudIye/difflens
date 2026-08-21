@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, select
@@ -15,6 +16,8 @@ from app.models import ProviderConnection, User
 from app.models import Session as SessionRow
 
 router = APIRouter(prefix="/auth")
+
+log = structlog.get_logger()
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -152,6 +155,15 @@ def github_callback(
         db.add(connection)
     connection.provider_account_id = gh_user["id"]
     connection.access_token_enc = security.encrypt_token(access_token)
+    if scopes:
+        # Asking for no scope does not guarantee getting one. An OAuth App
+        # authorization is a union: GitHub hands back every scope the user has
+        # ever granted this client, so a token can arrive carrying more than
+        # this code has ever requested. Nothing here asks for a scope, so any
+        # value at all is a surprise worth seeing rather than a column nobody
+        # reads. Recorded and logged rather than refused, because refusing
+        # would lock out the account it is trying to protect.
+        log.warning("github_token_carries_unrequested_scopes", scopes=scopes, user_id=str(user.id))
     connection.scopes = scopes
     connection.token_invalid = False
     connection.updated_at = now

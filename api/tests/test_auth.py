@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+import structlog
 from sqlalchemy import select
 
 from app import security
@@ -202,3 +203,66 @@ def test_the_state_cookie_is_cleared_on_every_failure(client):
         follow_redirects=False,
     )
     assert 'oauth_state=""' in response.headers.get("set-cookie", "")
+
+
+@pytest.fixture
+def github_returning_a_scope(monkeypatch):
+    """GitHub hands back a token carrying a scope this code never asked for."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
+            return httpx.Response(200, json={"access_token": RAW_GITHUB_TOKEN, "scope": "repo"})
+        if request.url.host == "api.github.com" and request.url.path == "/user":
+            return httpx.Response(200, json=GITHUB_USER)
+        return httpx.Response(404)
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport))
+
+
+def test_a_token_carrying_scopes_we_never_asked_for_is_not_silent(
+    client, db, github_returning_a_scope
+):
+    """Sending no scope does not guarantee getting a token without one.
+
+    An OAuth App authorization is a union of every scope the user has ever
+    granted this client, so the token can come back carrying more than the
+    authorize URL asked for, and this one asks for nothing at all. Sign in
+    still succeeds, because refusing would lock out the account the check
+    exists to protect, but it stops being invisible: the column was written
+    and read by nothing before this.
+    """
+    state = _start_login(client)
+    with structlog.testing.capture_logs() as logs:
+        response = client.get(
+            "/auth/github/callback",
+            params={"code": "good-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/dashboard"
+
+    warned = [e for e in logs if e["event"] == "github_token_carries_unrequested_scopes"]
+    assert warned, "a token arrived with an unrequested scope and nothing said so"
+    assert warned[0]["scopes"] == "repo"
+    assert warned[0]["log_level"] == "warning"
+
+    connection = db.execute(select(ProviderConnection)).scalar_one()
+    assert connection.scopes == "repo"
+
+
+def test_the_ordinary_empty_scope_says_nothing(client, db, mock_github):
+    """The normal case is silent, or the warning would mean nothing."""
+    state = _start_login(client)
+    with structlog.testing.capture_logs() as logs:
+        client.get(
+            "/auth/github/callback",
+            params={"code": "good-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert not [e for e in logs if e["event"] == "github_token_carries_unrequested_scopes"]
+    connection = db.execute(select(ProviderConnection)).scalar_one()
+    assert connection.scopes == ""
