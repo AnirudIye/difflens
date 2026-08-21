@@ -21,6 +21,11 @@ from app.services.repo_service import apply_pull_payload
 LIVE_REVIEW_STATUSES = ("queued", "running", "completed")
 TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled")
 
+# The partial unique index that permits one live review per (pull request,
+# head sha). Named here because a conflict has to be told apart from every
+# other integrity error the reviews insert could hit.
+LIVE_REVIEW_INDEX = "uq_reviews_pr_sha_live"
+
 
 class PullRequestClosed(Exception):
     pass
@@ -77,6 +82,17 @@ def refetch_open_pull(
     return payload
 
 
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """The constraint Postgres rejected the write on, when it named one.
+
+    psycopg carries it on the diagnostics of the driver error. Anything that
+    is not a psycopg error, and any driver that declines to say, gives None,
+    which callers must treat as "unknown" rather than "not that one".
+    """
+    diagnostics = getattr(getattr(exc, "orig", None), "diag", None)
+    return getattr(diagnostics, "constraint_name", None)
+
+
 def insert_review(
     db: Session, user: User, pull: PullRequest, head_sha: str, base_sha: str
 ) -> tuple[Review, ReviewJob]:
@@ -99,6 +115,9 @@ def insert_review(
     try:
         db.flush()
     except IntegrityError as exc:
+        # Read before the rollback, so which index refused the write is
+        # settled by the database rather than inferred from a second query
+        conflicted_on = _violated_constraint(exc)
         db.rollback()
         existing = db.execute(
             select(Review).where(
@@ -107,9 +126,16 @@ def insert_review(
                 Review.status.in_(LIVE_REVIEW_STATUSES),
             )
         ).scalar_one_or_none()
-        if existing is None:
-            raise  # some other integrity problem; let it surface
-        raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
+        if existing is not None:
+            raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
+        if conflicted_on == LIVE_REVIEW_INDEX:
+            # The winning review left the live statuses between the failed
+            # INSERT and that read, so there is nothing left to name. The
+            # index is still the authority on what happened: a live review
+            # was there when the INSERT ran, so this is a conflict and not a
+            # server error. The caller gets the same 409 without an id.
+            raise ReviewAlreadyExists(None) from exc
+        raise  # some other integrity problem; let it surface
 
     job = ReviewJob(review_id=review.id)
     db.add(job)
