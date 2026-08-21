@@ -256,6 +256,11 @@ body {
 .dash {
   width: 100%;
   max-width: 56rem;
+  /* .shell is a full-width column, so the body grid's place-items has nothing
+     left to centre by the time it reaches this element. Without the auto
+     margins the column hugs the left edge on every page that has a header,
+     while the pages without one (.landing, .login-card) centre correctly. */
+  margin-inline: auto;
   padding: 2.5rem 1.5rem;
 }
 
