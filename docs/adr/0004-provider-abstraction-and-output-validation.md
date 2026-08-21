@@ -73,9 +73,10 @@ real findings and still misses the phrasing nobody thought of.
   600s, whatever the SDK defaults to.
 - **The chain bounds false positives and does nothing about induced false negatives.** Every check
   runs on findings the model returned, so an injection that keeps it silent about a real bug leaves
-  no discard, no marker and no note. `docs/THREAT_MODEL.md` also claims two controls that do not
-  exist: the prompt says to ignore embedded instructions, not to report them, and no prompt version
-  reaches `pipeline_version`.
+  no discard, no marker and no note. The prompt is also weaker than it reads: it says to ignore
+  embedded instructions rather than report them, and it carries no version, so editing it leaves no
+  trace on the reviews it changed. `docs/THREAT_MODEL.md` claimed both of those as controls until
+  Day 10, when writing this ADR is what caught it.
 - **Prose is the unvalidated half.** `explanation` and `recommendation` are model-authored and
   uncapped, and `dedup.py::_merge_target` grafts them onto a deterministic finding and can raise its
   confidence, so unchecked text renders under an analyzer's title.
