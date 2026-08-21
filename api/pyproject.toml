@@ -37,7 +37,7 @@ dependencies = [
     # test_anthropic_request_shape asserts fallbacks, output_config and the
     # beta header on the wire through a MockTransport, so a bad floor fails CI
     # rather than production. No request has still ever reached the live API.
-    "anthropic>=0.108,<1",
+    "anthropic>=0.122.0,<1",
 ]
 
 [dependency-groups]
