@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import ProviderConnection, User
 from app.models import Session as SessionRow
-from app.security import decrypt_token, hash_session_token
+from app.security import decrypt_token, hash_session_token, note_unrequested_scopes
 from app.services.github_client import GitHubClient
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -66,6 +66,7 @@ def get_github_client(user: CurrentUser, db: DbSession) -> Generator[GitHubClien
     ).scalar_one_or_none()
     if connection is None or connection.token_invalid:
         raise github_reconnect_required()
+    note_unrequested_scopes(connection.scopes, user.id, seen_at="token_use")
     with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
         yield client
 

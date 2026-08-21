@@ -65,6 +65,33 @@ def _get_fernet() -> Fernet:
     return _fernet
 
 
+def note_unrequested_scopes(scopes: str, user_id: uuid.UUID, seen_at: str) -> None:
+    """Say something when a GitHub token carries a scope we never asked for.
+
+    The authorize URL sends no scope parameter, which GitHub reads as the
+    empty scope: public read only. That is a request, not a guarantee. An
+    OAuth App authorization is the union of every scope a user has granted
+    the client, so the token handed back can carry more than was asked for.
+
+    Called from both ends on purpose. The callback sees the value once, when
+    the token is minted; `get_github_client` sees it on every use, which is
+    the half that matters, because a session outlives the sign-in that
+    created it and nothing else re-examines the grant.
+
+    Logged, never refused: refusing would lock a user out of the account this
+    exists to protect, on a signal that is unexpected rather than proven
+    hostile. Noisy by design if it ever fires, since it should not.
+    """
+    if not scopes:
+        return
+    log.warning(
+        "github_token_carries_unrequested_scopes",
+        scopes=scopes,
+        user_id=str(user_id),
+        seen_at=seen_at,
+    )
+
+
 def encrypt_token(plaintext: str) -> str:
     return _get_fernet().encrypt(plaintext.encode()).decode()
 

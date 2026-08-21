@@ -6,7 +6,7 @@ import pytest
 import structlog
 from sqlalchemy import select
 
-from app import security
+from app import logging_setup, security
 from app.models import ProviderConnection, User
 from app.models import Session as SessionRow
 
@@ -20,13 +20,26 @@ GITHUB_USER = {
 
 
 @pytest.fixture
-def mock_github(monkeypatch):
+def github_scope(request):
+    """The scope GitHub reports back on the exchange.
+
+    Empty is the normal case, because the authorize URL asks for none. A test
+    that cares overrides it with indirect parametrization rather than cloning
+    the whole transport stub.
+    """
+    return getattr(request, "param", "")
+
+
+@pytest.fixture
+def mock_github(monkeypatch, github_scope):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
             if b"rejected-code" in request.content:
                 # GitHub answers 200 with an error body, not an error status
                 return httpx.Response(200, json={"error": "bad_verification_code"})
-            return httpx.Response(200, json={"access_token": RAW_GITHUB_TOKEN, "scope": ""})
+            return httpx.Response(
+                200, json={"access_token": RAW_GITHUB_TOKEN, "scope": github_scope}
+            )
         if request.url.host == "api.github.com" and request.url.path == "/user":
             assert request.headers["Authorization"] == f"Bearer {RAW_GITHUB_TOKEN}"
             return httpx.Response(200, json=GITHUB_USER)
@@ -205,25 +218,8 @@ def test_the_state_cookie_is_cleared_on_every_failure(client):
     assert 'oauth_state=""' in response.headers.get("set-cookie", "")
 
 
-@pytest.fixture
-def github_returning_a_scope(monkeypatch):
-    """GitHub hands back a token carrying a scope this code never asked for."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
-            return httpx.Response(200, json={"access_token": RAW_GITHUB_TOKEN, "scope": "repo"})
-        if request.url.host == "api.github.com" and request.url.path == "/user":
-            return httpx.Response(200, json=GITHUB_USER)
-        return httpx.Response(404)
-
-    real_client = httpx.Client
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport))
-
-
-def test_a_token_carrying_scopes_we_never_asked_for_is_not_silent(
-    client, db, github_returning_a_scope
-):
+@pytest.mark.parametrize("github_scope", ["repo"], indirect=True)
+def test_a_token_carrying_scopes_we_never_asked_for_is_not_silent(client, db, mock_github):
     """Sending no scope does not guarantee getting a token without one.
 
     An OAuth App authorization is a union of every scope the user has ever
@@ -266,3 +262,67 @@ def test_the_ordinary_empty_scope_says_nothing(client, db, mock_github):
     assert not [e for e in logs if e["event"] == "github_token_carries_unrequested_scopes"]
     connection = db.execute(select(ProviderConnection)).scalar_one()
     assert connection.scopes == ""
+
+
+def test_the_scope_warning_survives_redaction():
+    """capture_logs sees the event before the processors, production does not.
+
+    The two tests above assert on structlog's captured dict, which bypasses
+    the redaction chain entirely, so on their own they say nothing about what
+    lands in Render's logs. The event name contains "token" and the payload is
+    a credential-adjacent string, either of which a redactor could plausibly
+    blank. Run the real processor over the real event shape instead.
+    """
+    event = logging_setup.redact_sensitive(
+        None,
+        "warning",
+        {
+            "event": "github_token_carries_unrequested_scopes",
+            "scopes": "repo",
+            "user_id": "b4f0a1de-0000-4000-8000-000000000000",
+            "seen_at": "token_use",
+        },
+    )
+
+    assert event["scopes"] == "repo"
+    assert event["event"] == "github_token_carries_unrequested_scopes"
+    assert event["seen_at"] == "token_use"
+
+
+def test_an_elevated_token_is_noticed_every_time_it_is_used(
+    client, db, github, make_user_with_session
+):
+    """The callback sees the grant once; the session outlives it.
+
+    A scope can widen on GitHub's side without DiffLens issuing a new token,
+    and nothing re-runs the callback for a signed-in user. Checking only at
+    sign-in would leave an elevated token in use indefinitely with nothing
+    said, so get_github_client carries the same check.
+    """
+    user, _token = make_user_with_session("alice")
+    connection = db.execute(
+        select(ProviderConnection).where(ProviderConnection.user_id == user.id)
+    ).scalar_one()
+    connection.scopes = "repo"
+    db.flush()
+
+    with structlog.testing.capture_logs() as logs:
+        response = client.get("/repositories")
+
+    assert response.status_code == 200
+    warned = [e for e in logs if e["event"] == "github_token_carries_unrequested_scopes"]
+    assert warned, "an elevated token was used and nothing said so"
+    assert warned[0]["seen_at"] == "token_use"
+    assert warned[0]["scopes"] == "repo"
+
+
+def test_an_ordinary_token_stays_quiet_when_used(client, db, github, make_user_with_session):
+    """The empty scope is the normal case and must not warn, or the warning
+    stops meaning anything on the path that runs most often."""
+    make_user_with_session("bob")
+
+    with structlog.testing.capture_logs() as logs:
+        response = client.get("/repositories")
+
+    assert response.status_code == 200
+    assert not [e for e in logs if e["event"] == "github_token_carries_unrequested_scopes"]

@@ -194,9 +194,19 @@ body {
   min-height: 100svh;
   display: flex;
   flex-direction: column;
+  /* Centre every child here rather than on each page's main element. The body
+     grid's place-items cannot reach past this element, because .shell is
+     width: 100%, so without this a max-width child aligns to flex-start and
+     hugs the left edge. Doing it at the container means a new page with a
+     different main class cannot reintroduce the bug; the header opts out
+     below, since it is deliberately full bleed. */
+  align-items: center;
 }
 
 .site-header {
+  /* The one child that must span the viewport: its bottom border is the rule
+     under the whole page, not just under the content column */
+  align-self: stretch;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -256,11 +266,6 @@ body {
 .dash {
   width: 100%;
   max-width: 56rem;
-  /* .shell is a full-width column, so the body grid's place-items has nothing
-     left to centre by the time it reaches this element. Without the auto
-     margins the column hugs the left edge on every page that has a header,
-     while the pages without one (.landing, .login-card) centre correctly. */
-  margin-inline: auto;
   padding: 2.5rem 1.5rem;
 }
 

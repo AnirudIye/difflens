@@ -26,17 +26,26 @@ dependencies = [
     # ESLint, its counterpart, is already locked by eslint-runtime's lockfile.
     "ruff==0.16.3",
     "redis>=5.0",
-    # 1.0 moved the SDK off httpx onto httpx2, so an httpx.Client is rejected
-    # at runtime, not merely by the type checker. This code targets the 0.x
-    # surface and has never been exercised against the live API, so the major
-    # bump is a deliberate, verified migration rather than a resolution result.
-    "anthropic>=0.79,<1",
+    # Both bounds are load-bearing. 1.0 moved the SDK off httpx onto httpx2, so
+    # an httpx.Client is rejected at runtime, not merely by the type checker.
+    # The floor is where `fallbacks` appears on beta.messages.create: 0.107.1
+    # does not have it and 0.108.0 does (checked by reading
+    # resources/beta/messages/messages.py in each wheel), and AnthropicProvider
+    # passes it on every call. The old >=0.79 floor admitted versions that
+    # install cleanly and then raise TypeError on the first real review, on the
+    # one provider with no live-API coverage to catch it.
+    "anthropic>=0.108,<1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "pyright>=1.1.380",
+    # Pinned for the same reason as ruff, and it is the more urgent of the two:
+    # pyright is a hard CI gate whose diagnostics change between releases, so a
+    # float here turns main red on a commit that changed nothing. That is not
+    # hypothetical, it is what happened on 2026-08-21 with a different unpinned
+    # dependency. Upgrade deliberately, with the type errors read.
+    "pyright==1.1.411",
 ]
 
 [build-system]

@@ -16,6 +16,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+# The two partial unique indexes that carry the concurrency rules. Named here,
+# beside the Index() calls that create them, because app code has to recognise
+# them by name when Postgres refuses a write: a violation of one of these is a
+# conflict to translate, not a server error. The migrations keep their own
+# literals on purpose, since a migration is a historical record and must not
+# change when a constant does.
+LIVE_REVIEW_INDEX = "uq_reviews_pr_sha_live"
+LIVE_JOB_INDEX = "uq_jobs_one_live_per_review"
+
 
 class Base(DeclarativeBase):
     type_annotation_map = {
@@ -185,7 +194,7 @@ class Review(Base):
         Index("ix_reviews_pull_request_id_created_at", "pull_request_id", text("created_at DESC")),
         # One live review per (PR, commit): reruns are allowed only after failure/cancellation
         Index(
-            "uq_reviews_pr_sha_live",
+            LIVE_REVIEW_INDEX,
             "pull_request_id",
             "head_sha",
             unique=True,
@@ -221,7 +230,7 @@ class ReviewJob(Base):
         Index("ix_jobs_dequeue", "run_after", postgresql_where=text("status = 'queued'")),
         Index("ix_jobs_reclaim", "heartbeat_at", postgresql_where=text("status = 'running'")),
         Index(
-            "uq_jobs_one_live_per_review",
+            LIVE_JOB_INDEX,
             "review_id",
             unique=True,
             postgresql_where=text("status IN ('queued', 'running')"),

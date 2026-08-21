@@ -14,17 +14,20 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import PullRequest, Repository, Review, ReviewJob, User
+from app.models import (
+    LIVE_JOB_INDEX,
+    LIVE_REVIEW_INDEX,
+    PullRequest,
+    Repository,
+    Review,
+    ReviewJob,
+    User,
+)
 from app.services.github_client import GitHubClient
 from app.services.repo_service import apply_pull_payload
 
 LIVE_REVIEW_STATUSES = ("queued", "running", "completed")
 TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled")
-
-# The partial unique index that permits one live review per (pull request,
-# head sha). Named here because a conflict has to be told apart from every
-# other integrity error the reviews insert could hit.
-LIVE_REVIEW_INDEX = "uq_reviews_pr_sha_live"
 
 
 class PullRequestClosed(Exception):
@@ -114,6 +117,11 @@ def insert_review(
     db.add(review)
     try:
         db.flush()
+        # After the flush, never before: reviews.id comes from the database
+        # (server_default gen_random_uuid), so it is None until then
+        job = ReviewJob(review_id=review.id)
+        db.add(job)
+        db.commit()
     except IntegrityError as exc:
         # Read before the rollback, so which index refused the write is
         # settled by the database rather than inferred from a second query
@@ -128,18 +136,15 @@ def insert_review(
         ).scalar_one_or_none()
         if existing is not None:
             raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
-        if conflicted_on == LIVE_REVIEW_INDEX:
-            # The winning review left the live statuses between the failed
-            # INSERT and that read, so there is nothing left to name. The
-            # index is still the authority on what happened: a live review
-            # was there when the INSERT ran, so this is a conflict and not a
-            # server error. The caller gets the same 409 without an id.
+        if conflicted_on in (LIVE_REVIEW_INDEX, LIVE_JOB_INDEX):
+            # Either index refusing means a concurrent creator got there
+            # first. The winner has since left the live statuses, so there is
+            # nothing left to name, but the index is still the authority on
+            # what happened: this is a conflict and not a server error, and
+            # the caller gets the same 409 without an id.
             raise ReviewAlreadyExists(None) from exc
         raise  # some other integrity problem; let it surface
 
-    job = ReviewJob(review_id=review.id)
-    db.add(job)
-    db.commit()
     return review, job
 
 
