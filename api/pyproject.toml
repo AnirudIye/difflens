@@ -39,7 +39,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.1.1",
     # Pinned for the same reason as ruff, and it is the more urgent of the two:
     # pyright is a hard CI gate whose diagnostics change between releases, so a
     # float here turns main red on a commit that changed nothing. That is not
