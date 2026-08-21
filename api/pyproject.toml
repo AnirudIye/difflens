@@ -32,8 +32,11 @@ dependencies = [
     # does not have it and 0.108.0 does (checked by reading
     # resources/beta/messages/messages.py in each wheel), and AnthropicProvider
     # passes it on every call. The old >=0.79 floor admitted versions that
-    # install cleanly and then raise TypeError on the first real review, on the
-    # one provider with no live-API coverage to catch it.
+    # install cleanly and then raise TypeError on the first real call. Not
+    # silently, as an earlier draft of this comment implied: the contract test
+    # test_anthropic_request_shape asserts fallbacks, output_config and the
+    # beta header on the wire through a MockTransport, so a bad floor fails CI
+    # rather than production. No request has still ever reached the live API.
     "anthropic>=0.108,<1",
 ]
 

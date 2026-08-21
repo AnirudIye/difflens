@@ -7,6 +7,7 @@ no way to land in the middle of it.
 """
 
 import pytest
+import structlog
 from sqlalchemy import select, update
 
 from app.models import PullRequest, Repository, Review, ReviewJob, User
@@ -141,27 +142,50 @@ def test_violated_constraint_reads_the_index_postgres_named(db, pull):
     assert review_service._violated_constraint(excinfo.value) == review_service.LIVE_REVIEW_INDEX
 
 
-def test_a_job_index_violation_is_a_conflict_not_a_server_error(db, pull, monkeypatch):
-    """The job insert is inside the handler too, not just the review insert.
+@pytest.mark.parametrize("constraint", ["uq_jobs_one_live_per_review", "uq_pull_requests_x", None])
+def test_only_the_live_review_index_is_answered_as_a_conflict(db, pull, monkeypatch, constraint):
+    """Anything the live-review index did not refuse is a bug, not a race.
 
-    uq_jobs_one_live_per_review is unreachable through insert_review today,
-    because the review id is fresh every time, but it is the same shape of
-    integrity error one line further down and used to escape raw as a 500.
-    Simulated by reporting the job index as the violated constraint.
+    `db.commit()` flushes the whole session, so a refetched pull request or a
+    superseded review can be what Postgres actually refused. Classifying on
+    "is there a live review" rather than on the constraint would dress any of
+    those as a 409 telling the caller to wait for a review that does exist,
+    and it would do it with nothing in the log. uq_jobs_one_live_per_review
+    belongs in the same bucket: it cannot lose a race, because reviews.id is
+    a fresh gen_random_uuid on every call.
     """
+    user, pull_request = pull
+    review_service.insert_review(db, user, pull_request, pull_request.head_sha, BASE_SHA)
+    monkeypatch.setattr(review_service, "_violated_constraint", lambda exc: constraint)
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(review_service.IntegrityError):
+            review_service.insert_review(db, user, pull_request, pull_request.head_sha, BASE_SHA)
+
+    errored = [e for e in logs if e["event"] == "review_insert_failed_unexpectedly"]
+    assert errored, "an unexpected integrity error surfaced with nothing in the log"
+    assert errored[0]["constraint"] == constraint
+
+
+def test_a_real_conflict_is_logged_either_way(db, pull, monkeypatch):
+    """Both conflict paths log, and say whether the winner was still there."""
     user, pull_request = pull
     winner, _job = review_service.insert_review(
         db, user, pull_request, pull_request.head_sha, BASE_SHA
     )
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(review_service.ReviewAlreadyExists):
+            review_service.insert_review(db, user, pull_request, pull_request.head_sha, BASE_SHA)
+    still_live = [e for e in logs if e["event"] == "review_insert_conflict"]
+    assert still_live and still_live[0]["winner_still_live"] is True
+
     _supersede_during_recovery(db, monkeypatch, winner.id)
-    monkeypatch.setattr(
-        review_service, "_violated_constraint", lambda exc: review_service.LIVE_JOB_INDEX
-    )
-
-    with pytest.raises(review_service.ReviewAlreadyExists) as excinfo:
-        review_service.insert_review(db, user, pull_request, pull_request.head_sha, BASE_SHA)
-
-    assert excinfo.value.review_id is None
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(review_service.ReviewAlreadyExists):
+            review_service.insert_review(db, user, pull_request, pull_request.head_sha, BASE_SHA)
+    vanished = [e for e in logs if e["event"] == "review_insert_conflict"]
+    assert vanished and vanished[0]["winner_still_live"] is False
 
 
 def test_the_job_row_lands_with_its_review(db, pull):
@@ -179,3 +203,37 @@ def test_the_job_row_lands_with_its_review(db, pull):
     assert review.id is not None
     stored = db.execute(select(ReviewJob).where(ReviewJob.review_id == review.id)).scalar_one()
     assert stored.id == job.id
+
+
+def test_a_real_job_index_violation_at_commit_surfaces(db, pull, monkeypatch):
+    """The only test that makes db.commit() itself raise.
+
+    Everything else here provokes the review index at db.flush(). That leaves
+    the statement this handler was widened to cover, the commit, never being
+    the thing that fails, and SQLAlchemy's session state after a failed commit
+    is not the same as after a failed flush: the transaction is deactivated,
+    so anything before the rollback raises PendingRollbackError.
+
+    Reached without stubbing the classifier: a fresh head sha keeps the review
+    index quiet, and pointing the job at a review that already owns a live one
+    makes Postgres refuse at commit. The constraint name is then whatever the
+    database actually said, so this also pins LIVE_JOB_INDEX's value rather
+    than comparing it with itself.
+    """
+    user, pull_request = pull
+    winner, _job = review_service.insert_review(
+        db, user, pull_request, pull_request.head_sha, BASE_SHA
+    )
+    winner_id = winner.id
+    real_job = review_service.ReviewJob
+    monkeypatch.setattr(
+        review_service, "ReviewJob", lambda review_id: real_job(review_id=winner_id)
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(review_service.IntegrityError):
+            review_service.insert_review(db, user, pull_request, "d" * 40, BASE_SHA)
+
+    errored = [e for e in logs if e["event"] == "review_insert_failed_unexpectedly"]
+    assert errored, "a commit-time integrity error surfaced with nothing in the log"
+    assert errored[0]["constraint"] == "uq_jobs_one_live_per_review"

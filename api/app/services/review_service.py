@@ -10,12 +10,12 @@ violations into domain errors.
 import uuid
 from datetime import UTC, datetime
 
+import structlog
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    LIVE_JOB_INDEX,
     LIVE_REVIEW_INDEX,
     PullRequest,
     Repository,
@@ -25,6 +25,8 @@ from app.models import (
 )
 from app.services.github_client import GitHubClient
 from app.services.repo_service import apply_pull_payload
+
+log = structlog.get_logger()
 
 LIVE_REVIEW_STATUSES = ("queued", "running", "completed")
 TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled")
@@ -127,6 +129,25 @@ def insert_review(
         # settled by the database rather than inferred from a second query
         conflicted_on = _violated_constraint(exc)
         db.rollback()
+        if conflicted_on != LIVE_REVIEW_INDEX:
+            # Only this index means "someone else got there first". The commit
+            # above flushes the WHOLE session, not just these two rows, so a
+            # refetched pull request or a superseded review can be what
+            # Postgres actually refused; classifying on the presence of a live
+            # review rather than on the constraint would dress any of those as
+            # a 409. So would uq_jobs_one_live_per_review, which cannot lose a
+            # race at all, because reviews.id is a fresh gen_random_uuid on
+            # every call and no earlier job can reference it. Telling the
+            # caller to wait for a review that does not exist, with nothing in
+            # the log, is worse than the 500 this used to be.
+            log.error(
+                "review_insert_failed_unexpectedly",
+                constraint=conflicted_on,
+                pull_request_id=str(pull.id),
+                head_sha=head_sha,
+                user_id=str(user.id),
+            )
+            raise
         existing = db.execute(
             select(Review).where(
                 Review.pull_request_id == pull.id,
@@ -134,16 +155,18 @@ def insert_review(
                 Review.status.in_(LIVE_REVIEW_STATUSES),
             )
         ).scalar_one_or_none()
+        # The winner can leave the live statuses between the failed INSERT and
+        # that read, which is why this is logged either way: a conflict with
+        # nothing left to name is the interesting one.
+        log.warning(
+            "review_insert_conflict",
+            pull_request_id=str(pull.id),
+            head_sha=head_sha,
+            winner_still_live=existing is not None,
+        )
         if existing is not None:
             raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
-        if conflicted_on in (LIVE_REVIEW_INDEX, LIVE_JOB_INDEX):
-            # Either index refusing means a concurrent creator got there
-            # first. The winner has since left the live statuses, so there is
-            # nothing left to name, but the index is still the authority on
-            # what happened: this is a conflict and not a server error, and
-            # the caller gets the same 409 without an id.
-            raise ReviewAlreadyExists(None) from exc
-        raise  # some other integrity problem; let it surface
+        raise ReviewAlreadyExists(None) from exc
 
     return review, job
 

@@ -2,6 +2,8 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
+import structlog
+from cryptography.fernet import InvalidToken
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from app.models import ProviderConnection, User
 from app.models import Session as SessionRow
 from app.security import decrypt_token, hash_session_token, note_unrequested_scopes
 from app.services.github_client import GitHubClient
+
+log = structlog.get_logger()
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -67,7 +71,22 @@ def get_github_client(user: CurrentUser, db: DbSession) -> Generator[GitHubClien
     if connection is None or connection.token_invalid:
         raise github_reconnect_required()
     note_unrequested_scopes(connection.scopes, user.id, seen_at="token_use")
-    with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
+    try:
+        token = decrypt_token(connection.access_token_enc)
+    except InvalidToken as exc:
+        # A stored token stops decrypting when TOKEN_ENCRYPTION_KEY changes,
+        # and _get_fernet falls back to an EPHEMERAL key when that variable is
+        # empty, so every token written since the last restart is unreadable
+        # after the next one. On a free tier that sleeps, that is routine
+        # rather than exotic. Reconnecting is the actual remedy and the 401
+        # three lines above already says so; a raw InvalidToken here would be
+        # a 500 with a traceback instead. app/ai/factory.py handles the AI-key
+        # equivalent the same way.
+        log.error("github_token_undecryptable", user_id=str(user.id))
+        connection.token_invalid = True
+        db.commit()
+        raise github_reconnect_required() from exc
+    with GitHubClient(token) as client:
         yield client
 
 

@@ -5,6 +5,7 @@ import secrets
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import structlog
 from cryptography.fernet import Fernet
@@ -65,7 +66,9 @@ def _get_fernet() -> Fernet:
     return _fernet
 
 
-def note_unrequested_scopes(scopes: str, user_id: uuid.UUID, seen_at: str) -> None:
+def note_unrequested_scopes(
+    scopes: str, user_id: uuid.UUID, seen_at: Literal["callback", "token_use"]
+) -> None:
     """Say something when a GitHub token carries a scope we never asked for.
 
     The authorize URL sends no scope parameter, which GitHub reads as the

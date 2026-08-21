@@ -1,9 +1,18 @@
 import pytest
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Feedback, Finding, PullRequest, Repository, Review, User
+from app.models import (
+    LIVE_JOB_INDEX,
+    LIVE_REVIEW_INDEX,
+    Feedback,
+    Finding,
+    PullRequest,
+    Repository,
+    Review,
+    User,
+)
 
 EXPECTED_TABLES = {
     "users",
@@ -107,3 +116,24 @@ def test_feedback_upserts_per_finding_and_user(db):
     rows = db.execute(select(Feedback).where(Feedback.finding_id == finding.id)).scalars().all()
     assert len(rows) == 1
     assert rows[0].verdict == "not_useful"
+
+
+def test_the_named_indexes_are_the_ones_the_migrations_built(engine):
+    """The constants app code matches on must name real indexes.
+
+    `LIVE_REVIEW_INDEX` and `LIVE_JOB_INDEX` decide whether an IntegrityError
+    becomes a 409 or escapes as a 500, and nothing calls metadata.create_all,
+    so alembic is the sole creator and the constants agree with the database
+    by convention alone. `LIVE_REVIEW_INDEX` is pinned indirectly by
+    test_violated_constraint_reads_the_index_postgres_named, which provokes a
+    real violation; the job index has no reachable violation to provoke, so a
+    typo in it would leave every test green and quietly restore the 500.
+    """
+    with engine.connect() as connection:
+        present = set(
+            connection.execute(
+                text("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
+            ).scalars()
+        )
+    missing = {LIVE_REVIEW_INDEX, LIVE_JOB_INDEX} - present
+    assert not missing, f"named in app code but absent from the database: {sorted(missing)}"

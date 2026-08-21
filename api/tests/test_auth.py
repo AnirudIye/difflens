@@ -244,8 +244,11 @@ def test_a_token_carrying_scopes_we_never_asked_for_is_not_silent(client, db, mo
     assert warned, "a token arrived with an unrequested scope and nothing said so"
     assert warned[0]["scopes"] == "repo"
     assert warned[0]["log_level"] == "warning"
-
+    # seen_at exists only to tell the two call sites apart in the logs, and
+    # user_id is the field that makes the warning actionable at all
+    assert warned[0]["seen_at"] == "callback"
     connection = db.execute(select(ProviderConnection)).scalar_one()
+    assert warned[0]["user_id"] == str(connection.user_id)
     assert connection.scopes == "repo"
 
 
@@ -287,6 +290,8 @@ def test_the_scope_warning_survives_redaction():
     assert event["scopes"] == "repo"
     assert event["event"] == "github_token_carries_unrequested_scopes"
     assert event["seen_at"] == "token_use"
+    # The field most plausibly at risk from a future PII rule keyed on "user"
+    assert event["user_id"] == "b4f0a1de-0000-4000-8000-000000000000"
 
 
 def test_an_elevated_token_is_noticed_every_time_it_is_used(
@@ -314,6 +319,7 @@ def test_an_elevated_token_is_noticed_every_time_it_is_used(
     assert warned, "an elevated token was used and nothing said so"
     assert warned[0]["seen_at"] == "token_use"
     assert warned[0]["scopes"] == "repo"
+    assert warned[0]["user_id"] == str(user.id)
 
 
 def test_an_ordinary_token_stays_quiet_when_used(client, db, github, make_user_with_session):

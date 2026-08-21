@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import (
     BigInteger,
@@ -17,13 +17,16 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # The two partial unique indexes that carry the concurrency rules. Named here,
-# beside the Index() calls that create them, because app code has to recognise
+# beside the Index() calls that DECLARE them, because app code has to recognise
 # them by name when Postgres refuses a write: a violation of one of these is a
-# conflict to translate, not a server error. The migrations keep their own
-# literals on purpose, since a migration is a historical record and must not
-# change when a constant does.
-LIVE_REVIEW_INDEX = "uq_reviews_pr_sha_live"
-LIVE_JOB_INDEX = "uq_jobs_one_live_per_review"
+# conflict to translate, not a server error. Nothing calls metadata.create_all,
+# so alembic is the only thing that ever creates them and the migrations keep
+# their own literals on purpose: a migration is a historical record and must
+# not change when a constant does. That leaves these two strings agreeing with
+# the database by convention alone, which is what
+# test_the_named_indexes_are_the_ones_the_migrations_built exists to check.
+LIVE_REVIEW_INDEX: Final = "uq_reviews_pr_sha_live"
+LIVE_JOB_INDEX: Final = "uq_jobs_one_live_per_review"
 
 
 class Base(DeclarativeBase):
