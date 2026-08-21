@@ -19,10 +19,18 @@ dependencies = [
     # 0.x bundles every grammar in the wheel
     "tree-sitter-language-pack<1",
     "detect-secrets==1.5.0",
-    # the deployed pipeline shells out to ruff, so it is a runtime dependency
-    "ruff>=0.12",
+    # the deployed pipeline shells out to ruff, so it is a runtime dependency,
+    # and its exact output is what the golden fixtures assert. Pinned for the
+    # same reason detect-secrets is: a linter whose output is the contract is
+    # upgraded deliberately, with the goldens re-checked, never by resolution.
+    # ESLint, its counterpart, is already locked by eslint-runtime's lockfile.
+    "ruff==0.16.3",
     "redis>=5.0",
-    "anthropic>=0.79",
+    # 1.0 moved the SDK off httpx onto httpx2, so an httpx.Client is rejected
+    # at runtime, not merely by the type checker. This code targets the 0.x
+    # surface and has never been exercised against the live API, so the major
+    # bump is a deliberate, verified migration rather than a resolution result.
+    "anthropic>=0.79,<1",
 ]
 
 [dependency-groups]
