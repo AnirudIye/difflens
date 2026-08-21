@@ -6,6 +6,13 @@ DiffLens is an AI code review platform for GitHub pull requests. It pairs determ
 
 **[See a review without signing in](https://difflens-zeta.vercel.app/demo)** - one pull request with deliberate bugs in it, reviewed by the real pipeline. No account, no API key. The free tier sleeps, so give the first request up to a minute.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/demo-review-dark.png">
+  <img alt="The DiffLens demo review: 13 findings across two files, each with severity, category, confidence, source and line number." src="docs/images/demo-review-light.png">
+</picture>
+
+*The public demo at `/demo`. Every finding is pinned to a file and a line, and carries the analyzer or model it came from.*
+
 ## What it does
 
 - Signs in with GitHub OAuth using a deliberately empty scope: read-only, public repos only. DiffLens never asks for write access.
@@ -35,9 +42,22 @@ flowchart LR
 
 Everything runs on free tiers: Vercel for the Next.js 15 frontend, Render for the FastAPI API with the worker supervised in the same container, Neon for Postgres, Upstash for the Redis dispatch queue. Postgres holds job state as the source of truth; Redis is just the doorbell. Total infrastructure cost: $0.
 
+## Design decisions
+
+The four decisions that shaped everything else are written down as ADRs, each with the
+alternatives that lost and the costs that were accepted:
+
+- [001: Redis dispatches, Postgres is the truth](docs/adr/0001-queue-redis-dispatch-postgres-truth.md) - why the queue is hand-rolled instead of Celery, and the free-tier command budget that decided it.
+- [002: GitHub OAuth with an empty scope](docs/adr/0002-github-oauth-empty-scope.md) - why a review tool should not be able to write to your repository.
+- [003: The browser only ever talks to one origin](docs/adr/0003-session-via-next-rewrite-proxy.md) - the rewrite proxy, and the third-party cookie problem it avoids.
+- [004: Treat the AI provider and its output as untrusted](docs/adr/0004-provider-abstraction-and-output-validation.md) - the provider abstraction and the validation chain that discards hallucinated locations.
+
+The frozen scope and the descope ladder are in [docs/SCOPE.md](docs/SCOPE.md), annotated in place
+where the sprint diverged from it.
+
 ## Status
 
-Day 9 of a 10-day build. Live at https://difflens-zeta.vercel.app
+Built in 10 days, start to finish. Live at https://difflens-zeta.vercel.app
 
 - [x] Day 1: repo scaffold, CI, scope and architecture docs
 - [x] Day 2: database schema and GitHub OAuth
@@ -48,7 +68,27 @@ Day 9 of a 10-day build. Live at https://difflens-zeta.vercel.app
 - [x] Day 7: review UI
 - [x] Day 8: tests, security pass, threat model
 - [x] Day 9: demo mode and hardening
-- [ ] Day 10: portfolio polish
+- [x] Day 10: portfolio polish
+
+## What is not built
+
+Naming these is part of the point. Each was a decision, not an oversight:
+
+- **Private repositories.** They need a GitHub App. The OAuth `repo` scope is read and write, so
+  asking for it would mean asking for permission to push, which contradicts the whole posture.
+- **Posting findings back as PR comments.** Same reason: it needs write access.
+- **Webhooks and auto-review.** v1 is user-triggered. Webhook ingress is GitHub App territory too.
+- **Executing the reviewed code.** Reviews are static only. Running untrusted code is a different
+  product with a different threat model.
+- **A review history page.** Reviews are reachable by the redirect after you start one. There is
+  no listing endpoint yet.
+- **Account deletion, data export, and a Content-Security-Policy.** All three are named as
+  accepted gaps in [the threat model](docs/THREAT_MODEL.md), with the reason each was accepted.
+- **Languages beyond Python and TypeScript/JavaScript.** Every language multiplies analyzer work
+  and two are enough to prove the design.
+
+Only the Gemini provider has been exercised against a live API. Anthropic and OpenAI are built and
+tested against recorded responses, which is stated here rather than left for you to discover.
 
 ## Local development
 
@@ -107,4 +147,4 @@ Production runs on free tiers: Vercel for the frontend, Render for the API (Dock
 
 MIT. See [LICENSE](LICENSE).
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21

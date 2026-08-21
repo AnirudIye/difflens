@@ -1,5 +1,14 @@
 # Architecture
 
+This document is the shape of the system. The four decisions that produced that
+shape, with the alternatives that lost and the costs accepted, are recorded
+separately as ADRs in [adr/](adr/):
+
+- [0001](adr/0001-queue-redis-dispatch-postgres-truth.md): Redis dispatches, Postgres is the truth
+- [0002](adr/0002-github-oauth-empty-scope.md): GitHub OAuth with an empty scope
+- [0003](adr/0003-session-via-next-rewrite-proxy.md): The browser only ever talks to one origin
+- [0004](adr/0004-provider-abstraction-and-output-validation.md): Treat the AI provider and its output as untrusted
+
 ## Requirements
 
 Functional:
