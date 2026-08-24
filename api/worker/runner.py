@@ -14,6 +14,7 @@ Failure taxonomy:
   running -> cancelled transition
 """
 
+import tarfile
 import tempfile
 import uuid
 from collections import Counter
@@ -31,6 +32,7 @@ from app.analysis.ai_review import DEMO_AI_MODEL
 from app.analysis.models import ReviewJob as AnalysisJob
 from app.analysis.models import ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
+from app.analysis.repo_review import KEYLESS_AI_CHUNKS, MAX_AI_CHUNKS, AnalysisStopped
 from app.demo import sample as demo_sample
 from app.demo.candidates import DEMO_CANDIDATES
 from app.models import (
@@ -47,8 +49,10 @@ from app.services.github_client import (
     GitHubClient,
     GitHubNotFound,
     GitHubRateLimited,
+    GitHubSnapshotTooLarge,
 )
 from worker import jobs
+from worker.snapshot import SnapshotTooLarge, extract_snapshot
 
 log = structlog.get_logger()
 
@@ -72,6 +76,10 @@ EXHAUSTED_MESSAGE = "The review kept failing and was stopped; run it again to re
 TOO_MANY_FILES_MESSAGE = (
     "This pull request changes too many files to review (GitHub caps the comparison at 300 files)"
 )
+REPO_TOO_LARGE_MESSAGE = (
+    "This repository snapshot is too large to review (over 20,000 files or 200 MB of content)"
+)
+BAD_SNAPSHOT_MESSAGE = "GitHub returned a repository snapshot this pipeline could not unpack"
 
 # GitHub's compare endpoint hard-caps files[] at 300 with no way to page the
 # file list; at the cap we cannot tell a complete diff from a truncated one
@@ -187,6 +195,17 @@ def _persist_success(
             (stats.ai_parse_failed, "ai_parse_failed"),
             (stats.ai_truncated, "ai_truncated"),
             (stats.ai_skipped, f"ai_skipped={stats.ai_skipped}"),
+            (stats.truncated, "findings_truncated"),
+            (
+                stats.analyzers_skipped,
+                f"analyzers_skipped={','.join(sorted(stats.analyzers_skipped))}",
+            ),
+            (
+                review.repository_id is not None,
+                f"ai_coverage={stats.ai_files_covered}/{stats.ai_files_total}",
+            ),
+            (stats.ai_capped, "ai_capped=keyless"),
+            (stats.ai_chunks_failed, f"ai_chunks_failed={stats.ai_chunks_failed}"),
         )
         if flag
     ]
@@ -273,6 +292,68 @@ def _run_demo_review(review: Review, pull: PullRequest, repository: Repository) 
         )
 
 
+def _github_connection(db: Session, user_id: uuid.UUID) -> ProviderConnection | None:
+    return db.execute(
+        select(ProviderConnection).where(
+            ProviderConnection.user_id == user_id,
+            ProviderConnection.provider == "github",
+        )
+    ).scalar_one_or_none()
+
+
+def _run_repository_review(
+    db: Session,
+    job: ReviewJob,
+    review: Review,
+    repository: Repository,
+    worker_id: str,
+    mode: str,
+    ai_provider,
+    ai_source: str,
+) -> ReviewResult | str:
+    """Ingest the snapshot tarball and run the pipeline over the whole tree.
+
+    Returns the result, or a checkpoint outcome string when the job was
+    cancelled or lost between stages. The chunk cap is the tier decision:
+    a user's own key buys full coverage, the shared keyless tier gets one
+    chunk and an honest note saying so.
+    """
+    chunk_cap = MAX_AI_CHUNKS if ai_source == "user" else KEYLESS_AI_CHUNKS
+    cap_reason = None if ai_source == "user" else "keyless"
+    connection = _github_connection(db, review.user_id)
+    assert connection is not None  # caller checked
+    with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
+        with tempfile.TemporaryDirectory(prefix="difflens-repo-") as tmp:
+            tmp_path = Path(tmp)
+            tar_path = tmp_path / "snapshot.tar.gz"
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            client.download_tarball(repository.full_name, review.head_sha, tar_path)
+            if outcome := _checkpoint(db, job, worker_id):
+                return outcome
+            extract_snapshot(tar_path, workspace)
+            # The tarball is spent; reclaim the disk before analyzers run
+            tar_path.unlink()
+            if outcome := _checkpoint(db, job, worker_id):
+                return outcome
+            return run_review(
+                AnalysisJob(
+                    repo_full_name=repository.full_name,
+                    base_sha=None,
+                    head_sha=review.head_sha,
+                    diff_text="",
+                    workspace=workspace,
+                    mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
+                    target="repository",
+                    ai_chunk_cap=chunk_cap,
+                    ai_cap_reason=cap_reason,
+                ),
+                provider=ai_provider,
+                stop_check=lambda: _checkpoint(db, job, worker_id),
+                ai_config_errors=AI_CONFIG_ERRORS,
+            )
+
+
 def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
     """Run a job this worker already claimed (the loop claims before it
     starts the heartbeat thread, so a beat can never race its own claim)."""
@@ -285,78 +366,103 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
         if outcome := _checkpoint(db, job, worker_id):
             return outcome
 
-        pull = db.get(PullRequest, review.pull_request_id)
-        assert pull is not None
-        repository = db.get(Repository, pull.repository_id)
-        assert repository is not None
-
-        if repository.is_demo:
-            # The public demo, decided before the provider is resolved and
-            # before any token is looked up. Entering this branch first is
-            # what guarantees a demo review can reach neither GitHub nor the
-            # operator's AI key, whoever started it.
-            mode = "demo"
-            if outcome := _checkpoint(db, job, worker_id):
-                return outcome
-            result = _run_demo_review(review, pull, repository)
-        else:
-            # Resolve the AI provider before spending any GitHub calls: the
-            # review author's own key wins, then server config. A config error
-            # is permanent and burns no retries.
+        if review.pull_request_id is None:
+            repository = db.get(Repository, review.repository_id)
+            assert repository is not None
+            # The demo divert stays PR-only; creation cannot reach the demo
+            # repository through the authenticated path, and this assert
+            # keeps a future seeding change from quietly changing that
+            assert not repository.is_demo
             try:
                 mode, ai_provider, ai_source = resolve_provider(db, review.user_id)
             except UserAIKeyError as exc:
-                # Only the user can fix their unreadable key; say so
                 return _fail_or_lost(db, job, worker_id, BYOK_MISCONFIGURED_MESSAGE, str(exc))
             except ValueError as exc:
                 return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
-
-            connection = db.execute(
-                select(ProviderConnection).where(
-                    ProviderConnection.user_id == review.user_id,
-                    ProviderConnection.provider == "github",
-                )
-            ).scalar_one_or_none()
+            connection = _github_connection(db, review.user_id)
             if connection is None or connection.token_invalid:
                 return _fail_or_lost(
                     db, job, worker_id, RECONNECT_MESSAGE, "github connection missing or invalid"
                 )
+            outcome_or_result = _run_repository_review(
+                db, job, review, repository, worker_id, mode, ai_provider, ai_source
+            )
+            if isinstance(outcome_or_result, str):
+                return outcome_or_result
+            result = outcome_or_result
+        else:
+            pull = db.get(PullRequest, review.pull_request_id)
+            assert pull is not None
+            assert review.base_sha is not None  # ck_reviews_pr_has_base guarantees it
+            repository = db.get(Repository, pull.repository_id)
+            assert repository is not None
 
-            with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
-                compare = client.compare(repository.full_name, review.base_sha, review.head_sha)
+            if repository.is_demo:
+                # The public demo, decided before the provider is resolved and
+                # before any token is looked up. Entering this branch first is
+                # what guarantees a demo review can reach neither GitHub nor
+                # the operator's AI key, whoever started it.
+                mode = "demo"
                 if outcome := _checkpoint(db, job, worker_id):
                     return outcome
+                result = _run_demo_review(review, pull, repository)
+            else:
+                # Resolve the AI provider before spending any GitHub calls:
+                # the review author's own key wins, then server config. A
+                # config error is permanent and burns no retries.
+                try:
+                    mode, ai_provider, ai_source = resolve_provider(db, review.user_id)
+                except UserAIKeyError as exc:
+                    # Only the user can fix their unreadable key; say so
+                    return _fail_or_lost(db, job, worker_id, BYOK_MISCONFIGURED_MESSAGE, str(exc))
+                except ValueError as exc:
+                    return _fail_or_lost(db, job, worker_id, AI_MISCONFIGURED_MESSAGE, str(exc))
 
-                files = compare.get("files", [])
-                if len(files) >= COMPARE_FILE_CAP:
+                connection = _github_connection(db, review.user_id)
+                if connection is None or connection.token_invalid:
                     return _fail_or_lost(
                         db,
                         job,
                         worker_id,
-                        TOO_MANY_FILES_MESSAGE,
-                        "compare files[] truncated at GitHub's 300-file cap",
+                        RECONNECT_MESSAGE,
+                        "github connection missing or invalid",
                     )
-                diff_text = build_diff_text(files)
-                with tempfile.TemporaryDirectory(prefix="difflens-review-") as tmp:
-                    workspace = Path(tmp)
-                    populate_workspace(
-                        client, repository.full_name, review.head_sha, files, workspace
-                    )
+
+                with GitHubClient(decrypt_token(connection.access_token_enc)) as client:
+                    compare = client.compare(repository.full_name, review.base_sha, review.head_sha)
                     if outcome := _checkpoint(db, job, worker_id):
                         return outcome
 
-                    result = run_review(
-                        AnalysisJob(
-                            repo_full_name=repository.full_name,
-                            pr_title=pull.title,
-                            base_sha=review.base_sha,
-                            head_sha=review.head_sha,
-                            diff_text=diff_text,
-                            workspace=workspace,
-                            mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
-                        ),
-                        provider=ai_provider,
-                    )
+                    files = compare.get("files", [])
+                    if len(files) >= COMPARE_FILE_CAP:
+                        return _fail_or_lost(
+                            db,
+                            job,
+                            worker_id,
+                            TOO_MANY_FILES_MESSAGE,
+                            "compare files[] truncated at GitHub's 300-file cap",
+                        )
+                    diff_text = build_diff_text(files)
+                    with tempfile.TemporaryDirectory(prefix="difflens-review-") as tmp:
+                        workspace = Path(tmp)
+                        populate_workspace(
+                            client, repository.full_name, review.head_sha, files, workspace
+                        )
+                        if outcome := _checkpoint(db, job, worker_id):
+                            return outcome
+
+                        result = run_review(
+                            AnalysisJob(
+                                repo_full_name=repository.full_name,
+                                pr_title=pull.title,
+                                base_sha=review.base_sha,
+                                head_sha=review.head_sha,
+                                diff_text=diff_text,
+                                workspace=workspace,
+                                mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
+                            ),
+                            provider=ai_provider,
+                        )
 
         stats = result.stats
         if stats.ai_refused or stats.ai_parse_failed or stats.ai_truncated or stats.ai_skipped:
@@ -393,6 +499,19 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
     except AnalysisError as exc:
         db.rollback()
         return _fail_or_lost(db, job, worker_id, BAD_DIFF_MESSAGE, str(exc))
+    except AnalysisStopped as exc:
+        # Cancellation noticed between AI chunks; _checkpoint already moved
+        # the job, so the outcome just propagates
+        return exc.outcome
+    except (SnapshotTooLarge, GitHubSnapshotTooLarge) as exc:
+        # Permanent: the repository will be exactly as big on every retry
+        db.rollback()
+        return _fail_or_lost(db, job, worker_id, REPO_TOO_LARGE_MESSAGE, str(exc))
+    except (tarfile.ReadError, EOFError) as exc:
+        db.rollback()
+        return _fail_or_lost(
+            db, job, worker_id, BAD_SNAPSHOT_MESSAGE, f"{type(exc).__name__}: {exc}"
+        )
     except AI_CONFIG_ERRORS as exc:
         # A revoked key or bad model id fails every retry identically; stop
         # now, and blame the key's owner accurately

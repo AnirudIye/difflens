@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -26,11 +26,21 @@ from app.analysis.analyzers.eslint_adapter import ESLintAnalyzer, eslint_version
 from app.analysis.analyzers.ruff_adapter import RuffAnalyzer
 from app.analysis.analyzers.secrets_adapter import SecretsAnalyzer
 from app.analysis.analyzers.test_detector import TestDetector
-from app.analysis.dedup import dedupe
+from app.analysis.dedup import MAX_FINDINGS, dedupe
 from app.analysis.diffs.parser import DiffIndex, build_diff_index
+from app.analysis.diffs.snapshot import build_snapshot_index
 from app.analysis.models import Finding, ReviewJob, ReviewResult, ReviewStats
+from app.analysis.repo_review import run_repo_ai_stage
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+
+# A repository snapshot lints every file, not a 300-file diff; the harness
+# and subprocess ceilings scale with it. ESLint's own timeout stays below the
+# harness's so the subprocess dies with a real error instead of the harness
+# abandoning its thread.
+REPO_ANALYZER_TIMEOUT_S = 300
+REPO_RUFF_TIMEOUT_S = 300
+REPO_ESLINT_TIMEOUT_S = 270
 
 
 class AnalysisError(Exception):
@@ -50,8 +60,10 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _summarize(findings: list[Finding]) -> str:
+def _summarize(findings: list[Finding], target: str = "pull_request") -> str:
     if not findings:
+        if target == "repository":
+            return "No findings. This repository came back clean at this commit."
         return "No findings. The changed code passes all deterministic checks."
     counts = Counter(finding.severity for finding in findings)
     breakdown = ", ".join(f"{counts[s]} {s}" for s in SEVERITY_ORDER if counts[s])
@@ -141,27 +153,92 @@ def _ai_note(stats: ReviewStats) -> str | None:
     return None
 
 
-def run_review(job: ReviewJob, provider: AIProvider | None = None) -> ReviewResult:
+def _repo_ai_note(stats: ReviewStats) -> str | None:
+    """Honest coverage sentences for a repository snapshot's AI stage."""
+    if stats.ai_model == "mock":
+        # The mock never fails a chunk, so unlike _ai_note this check can
+        # come first: there is no specific failure for it to shadow
+        return "No AI reviewer is configured, so only deterministic checks ran."
+    notes: list[str] = []
+    covered, total = stats.ai_files_covered, stats.ai_files_total
+    if stats.ai_capped:
+        notes.append(
+            f"The AI reviewer read {covered} of {total} reviewable files; without "
+            "your own AI key, AI coverage is capped. Add your own AI key in "
+            "Settings to lift the cap. The deterministic analyzers checked every "
+            "reviewable file."
+        )
+    elif covered < total and not stats.ai_chunks_failed:
+        notes.append(
+            f"The AI reviewer read {covered} of {total} reviewable files; this "
+            "repository is larger than one review can cover. The deterministic "
+            "analyzers checked every reviewable file."
+        )
+    if stats.ai_chunks_failed:
+        notes.append(
+            f"The AI reviewer could not finish {stats.ai_chunks_failed} of "
+            f"{stats.ai_chunks_planned} passes over this repository; AI findings "
+            "may be incomplete."
+        )
+    if stats.ai_truncated:
+        notes.append("The AI reviewer's output was cut short; its findings may be incomplete.")
+    return " ".join(notes) or None
+
+
+def run_review(
+    job: ReviewJob,
+    provider: AIProvider | None = None,
+    stop_check: Callable[[], str | None] | None = None,
+    ai_config_errors: tuple[type[BaseException], ...] = (),
+) -> ReviewResult:
     if job.mode != "deterministic_only" and provider is None:
         raise ValueError(f"mode {job.mode!r} requires an AI provider")
+    snapshot = job.target == "repository"
 
     stats = ReviewStats()
 
     with _timed(stats, "parse"):
-        try:
-            index = build_diff_index(job.diff_text)
-        except Exception as exc:
-            raise AnalysisError(f"could not parse diff: {exc}") from exc
+        if snapshot:
+            index = build_snapshot_index(job.workspace)
+        else:
+            try:
+                index = build_diff_index(job.diff_text)
+            except Exception as exc:
+                raise AnalysisError(f"could not parse diff: {exc}") from exc
 
     with _timed(stats, "analyze"):
-        analyzers = [RuffAnalyzer(), SecretsAnalyzer(), TestDetector(), ESLintAnalyzer()]
+        if snapshot:
+            # No TestDetector: "changed logic without changed tests" is
+            # meaningless when everything counts as changed, and it would
+            # false-positive on every repository without a test file
+            analyzers = [
+                RuffAnalyzer(timeout_s=REPO_RUFF_TIMEOUT_S),
+                SecretsAnalyzer(),
+                ESLintAnalyzer(timeout_s=REPO_ESLINT_TIMEOUT_S),
+            ]
+            timeout_s = REPO_ANALYZER_TIMEOUT_S
+        else:
+            analyzers = [RuffAnalyzer(), SecretsAnalyzer(), TestDetector(), ESLintAnalyzer()]
+            timeout_s = 60
         findings, stats.analyzers_run, stats.analyzers_skipped = run_analyzers(
-            analyzers, job.workspace, index
+            analyzers, job.workspace, index, timeout_s=timeout_s
         )
 
     if job.mode != "deterministic_only" and provider is not None:
         with _timed(stats, "ai"):
-            findings.extend(_run_ai_stage(job, provider, index, job.workspace, stats))
+            if snapshot:
+                findings.extend(
+                    run_repo_ai_stage(
+                        job,
+                        provider,
+                        index,
+                        stats,
+                        stop_check=stop_check,
+                        config_errors=ai_config_errors,
+                    )
+                )
+            else:
+                findings.extend(_run_ai_stage(job, provider, index, job.workspace, stats))
     stats.findings_before_dedup = len(findings)
 
     with _timed(stats, "dedup"):
@@ -169,16 +246,26 @@ def run_review(job: ReviewJob, provider: AIProvider | None = None) -> ReviewResu
     stats.findings_after_dedup = len(findings)
 
     with _timed(stats, "summarize"):
-        summary = _summarize(findings)
+        summary = _summarize(findings, job.target)
+        notes: list[str] = []
         if job.mode != "deterministic_only":
-            note = _ai_note(stats)
+            note = _repo_ai_note(stats) if snapshot else _ai_note(stats)
             if note:
-                # The counts sentence has no full stop of its own, so without
-                # this the note runs straight on from it: "...2 low) The AI
-                # reviewer...". Added here rather than in _summarize so the
-                # summary reads the same with or without a note.
-                joiner = " " if summary.endswith((".", "!", "?")) else ". "
-                summary = f"{summary}{joiner}{note}"
+                notes.append(note)
+        if stats.truncated:
+            # Computed since day one and never surfaced; at repository scale
+            # hitting the cap is routine rather than exotic, so it speaks now
+            notes.append(
+                f"More than {MAX_FINDINGS} findings were found; only the "
+                f"{MAX_FINDINGS} most severe are shown."
+            )
+        for note in notes:
+            # The counts sentence has no full stop of its own, so without
+            # this the note runs straight on from it: "...2 low) The AI
+            # reviewer...". Added here rather than in _summarize so the
+            # summary reads the same with or without a note.
+            joiner = " " if summary.endswith((".", "!", "?")) else ". "
+            summary = f"{summary}{joiner}{note}"
 
     stats.tool_versions = _tool_versions()
     if stats.ai_model:

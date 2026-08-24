@@ -1,8 +1,14 @@
 import base64
 import binascii
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+# Compressed tarball ceiling. Anything bigger cannot pass the 200MB extraction
+# ceiling in worker.snapshot anyway, and stopping at download keeps the free
+# tier's ephemeral disk from filling first.
+MAX_TARBALL_BYTES = 100 * 1024 * 1024
 
 
 class GitHubError(Exception):
@@ -25,6 +31,10 @@ class GitHubRateLimited(GitHubError):
     def __init__(self, reset_at: int | None) -> None:
         super().__init__("GitHub rate limit exhausted")
         self.reset_at = reset_at
+
+
+class GitHubSnapshotTooLarge(GitHubError):
+    pass
 
 
 class GitHubClient:
@@ -79,6 +89,56 @@ class GitHubClient:
     def compare(self, full_name: str, base_sha: str, head_sha: str) -> dict[str, Any]:
         # files[] in this payload carries the per-file patch text the review worker consumes
         return self._get(f"/repos/{full_name}/compare/{base_sha}...{head_sha}")
+
+    def get_repo(self, full_name: str) -> dict[str, Any]:
+        return self._get(f"/repos/{full_name}")
+
+    def get_branch_head(self, full_name: str, branch: str) -> str:
+        """The branch's current head commit SHA.
+
+        404 covers an empty repository and a renamed branch alike; the caller
+        decides what that means.
+        """
+        payload = self._get(f"/repos/{full_name}/branches/{branch}")
+        return payload["commit"]["sha"]
+
+    def download_tarball(self, full_name: str, sha: str, destination: Path) -> None:
+        """Stream the repository tarball at a pinned SHA to a local file.
+
+        GitHub answers this endpoint with a 302 to codeload, so the request
+        follows redirects (httpx drops the Authorization header on the
+        cross-origin hop, which is what we want; the Location URL is
+        self-authorizing). The payload is not JSON, so the error mapping from
+        _get is replicated here rather than reused. Aborts with
+        GitHubSnapshotTooLarge past MAX_TARBALL_BYTES.
+        """
+        try:
+            with self._client.stream(
+                "GET", f"/repos/{full_name}/tarball/{sha}", follow_redirects=True
+            ) as response:
+                if response.status_code == 401:
+                    raise GitHubAuthError("GitHub rejected the access token")
+                if (
+                    response.status_code == 403
+                    and response.headers.get("x-ratelimit-remaining") == "0"
+                ):
+                    reset = response.headers.get("x-ratelimit-reset", "")
+                    raise GitHubRateLimited(int(reset) if reset.isdigit() else None)
+                if response.status_code == 404:
+                    raise GitHubNotFound(f"GitHub returned 404 for the {sha} tarball")
+                if response.status_code >= 400:
+                    raise GitHubTransient(f"GitHub returned {response.status_code}")
+                written = 0
+                with destination.open("wb") as out:
+                    for chunk in response.iter_bytes():
+                        written += len(chunk)
+                        if written > MAX_TARBALL_BYTES:
+                            raise GitHubSnapshotTooLarge(
+                                f"tarball exceeded {MAX_TARBALL_BYTES} bytes"
+                            )
+                        out.write(chunk)
+        except httpx.HTTPError as exc:
+            raise GitHubTransient("GitHub request failed") from exc
 
     def get_file_content(self, full_name: str, path: str, ref: str) -> bytes | None:
         """One file's bytes at a pinned SHA, or None when GitHub will not inline it.

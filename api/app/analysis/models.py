@@ -32,15 +32,21 @@ class Finding(BaseModel):
 
 class ReviewJob(BaseModel):
     repo_full_name: str
-    pr_title: str
+    pr_title: str = ""
     pr_body: str | None = None
-    base_sha: str
+    base_sha: str | None = None
     head_sha: str
     diff_text: str
-    # directory holding head-SHA contents of changed files, relative paths
+    # directory holding head-SHA contents of changed files (or, for a
+    # repository snapshot, the whole extracted tree), relative paths
     # mirroring the repo layout
     workspace: Path
     mode: Literal["deterministic_only", "cheap", "demo"] = "deterministic_only"
+    target: Literal["pull_request", "repository"] = "pull_request"
+    # Repository snapshots only. The worker decides the chunk cap from who
+    # supplied the AI key; the pipeline stays policy-free and just obeys it.
+    ai_chunk_cap: int | None = None
+    ai_cap_reason: Literal["keyless"] | None = None
 
 
 class ReviewStats(BaseModel):
@@ -59,6 +65,14 @@ class ReviewStats(BaseModel):
     ai_skipped: str | None = None  # e.g. "diff_too_large"
     ai_candidates: int = 0
     ai_discarded: dict[str, int] = {}
+    # Repository snapshots: how much of the repo the AI actually read
+    ai_files_total: int = 0
+    ai_files_covered: int = 0
+    ai_files_skipped_large: int = 0
+    ai_chunks_planned: int = 0
+    ai_chunks_run: int = 0
+    ai_chunks_failed: int = 0
+    ai_capped: bool = False
 
 
 class ReviewResult(BaseModel):

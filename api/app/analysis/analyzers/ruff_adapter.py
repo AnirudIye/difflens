@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.analysis.analyzers.base import ANALYZER_ARGV_CHAR_CAP
 from app.analysis.analyzers.mappings import map_ruff
 from app.analysis.diffs.parser import DiffIndex
 from app.analysis.diffs.validator import is_reviewable, touches_change
@@ -25,6 +26,9 @@ def _relative_path(filename: str, root: Path) -> str:
 class RuffAnalyzer:
     name = "ruff"
 
+    def __init__(self, timeout_s: float = RUFF_TIMEOUT_S) -> None:
+        self.timeout_s = timeout_s
+
     def analyze(self, workspace: Path, index: DiffIndex) -> list[Finding]:
         files = [
             path
@@ -33,6 +37,10 @@ class RuffAnalyzer:
         ]
         if not files:
             return []
+        if sum(len(path) + 1 for path in files) > ANALYZER_ARGV_CHAR_CAP:
+            # Scan the workspace root instead; touches_change drops any
+            # finding on a path outside the index, so the output is identical
+            files = ["."]
 
         # --isolated so the target repo's own ruff config cannot change what we scan
         command = [
@@ -60,7 +68,7 @@ class RuffAnalyzer:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=RUFF_TIMEOUT_S,
+            timeout=self.timeout_s,
         )
         # exit 1 just means ruff found violations
         if result.returncode not in (0, 1):

@@ -71,7 +71,7 @@ def get_demo_review(_gate: DemoEnabled, db: DbSession) -> dict[str, Any]:
         # Feedback is per user and the demo has no signed-in user, so every
         # verdict is null and the page renders no feedback controls.
         verdicts={},
-        context=review_payload.load_pull_context(db, review),
+        context=review_payload.load_review_context(db, review),
     )
 
 
@@ -110,5 +110,5 @@ def rerun_demo_review(_gate: DemoEnabled, _limit: DemoRateLimit, db: DbSession) 
         cancel_requested=False,
         findings=[],
         verdicts={},
-        context=review_payload.load_pull_context(db, review),
+        context=review_payload.load_review_context(db, review),
     )

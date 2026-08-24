@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from app.analysis.analyzers.base import ANALYZER_ARGV_CHAR_CAP
 from app.analysis.analyzers.mappings import map_eslint
 from app.analysis.diffs.parser import DiffIndex
 from app.analysis.diffs.validator import is_reviewable, touches_change
@@ -77,8 +78,9 @@ def eslint_version(runtime: Path | None = None) -> str:
 class ESLintAnalyzer:
     name = "eslint"
 
-    def __init__(self, runtime: Path | None = None) -> None:
+    def __init__(self, runtime: Path | None = None, timeout_s: float = ESLINT_TIMEOUT_S) -> None:
         self.runtime = _resolve(runtime)
+        self.timeout_s = timeout_s
 
     def analyze(self, workspace: Path, index: DiffIndex) -> list[Finding]:
         files = [
@@ -90,6 +92,10 @@ class ESLintAnalyzer:
             # Checked before node is: a Python-only pull request must not be
             # told that a JavaScript linter is missing
             return []
+        if sum(len(path) + 1 for path in files) > ANALYZER_ARGV_CHAR_CAP:
+            # Scan the workspace root instead; touches_change drops any
+            # finding on a path outside the index, so the output is identical
+            files = ["."]
 
         node = shutil.which("node")
         entrypoint = _eslint_entrypoint(self.runtime)
@@ -128,7 +134,7 @@ class ESLintAnalyzer:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=ESLINT_TIMEOUT_S,
+            timeout=self.timeout_s,
         )
         # 0 clean, 1 lint problems found, 2 ESLint itself failed
         if result.returncode not in (0, 1):

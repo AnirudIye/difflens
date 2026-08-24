@@ -16,16 +16,17 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# The two partial unique indexes that carry the concurrency rules. Named here,
+# The partial unique indexes that carry the concurrency rules. Named here,
 # beside the Index() calls that DECLARE them, because app code has to recognise
 # them by name when Postgres refuses a write: a violation of one of these is a
 # conflict to translate, not a server error. Nothing calls metadata.create_all,
 # so alembic is the only thing that ever creates them and the migrations keep
 # their own literals on purpose: a migration is a historical record and must
-# not change when a constant does. That leaves these two strings agreeing with
+# not change when a constant does. That leaves these strings agreeing with
 # the database by convention alone, which is what
 # test_the_named_indexes_are_the_ones_the_migrations_built exists to check.
 LIVE_REVIEW_INDEX: Final = "uq_reviews_pr_sha_live"
+LIVE_REPO_REVIEW_INDEX: Final = "uq_reviews_repo_sha_live"
 LIVE_JOB_INDEX: Final = "uq_jobs_one_live_per_review"
 
 
@@ -193,8 +194,22 @@ class Review(Base):
             "status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'superseded')",
             name="ck_reviews_status",
         ),
+        # A review targets exactly one thing: a pull request or a repository
+        # snapshot. Postgres treats NULLs as distinct in unique indexes, so a
+        # review with a NULL pull_request_id would slip past the PR live index;
+        # the repo live index below is what closes that gap.
+        CheckConstraint(
+            "(pull_request_id IS NULL) != (repository_id IS NULL)",
+            name="ck_reviews_one_target",
+        ),
+        # Only a repository snapshot has no base commit
+        CheckConstraint(
+            "pull_request_id IS NULL OR base_sha IS NOT NULL",
+            name="ck_reviews_pr_has_base",
+        ),
         Index("ix_reviews_user_id_created_at", "user_id", text("created_at DESC")),
         Index("ix_reviews_pull_request_id_created_at", "pull_request_id", text("created_at DESC")),
+        Index("ix_reviews_repository_id_created_at", "repository_id", text("created_at DESC")),
         # One live review per (PR, commit): reruns are allowed only after failure/cancellation
         Index(
             LIVE_REVIEW_INDEX,
@@ -203,15 +218,29 @@ class Review(Base):
             unique=True,
             postgresql_where=text("status IN ('queued', 'running', 'completed')"),
         ),
+        # One live review per (repository, commit), the repo-snapshot sibling
+        # of the index above and the structural cap on concurrent repo jobs
+        Index(
+            LIVE_REPO_REVIEW_INDEX,
+            "repository_id",
+            "head_sha",
+            unique=True,
+            postgresql_where=text(
+                "repository_id IS NOT NULL AND status IN ('queued', 'running', 'completed')"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    pull_request_id: Mapped[uuid.UUID] = mapped_column(
+    pull_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("pull_requests.id", ondelete="CASCADE")
     )
+    repository_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE")
+    )
     head_sha: Mapped[str]
-    base_sha: Mapped[str]
+    base_sha: Mapped[str | None]
     status: Mapped[str] = mapped_column(server_default=text("'queued'"))
     summary: Mapped[str | None]
     findings_count: Mapped[int | None]

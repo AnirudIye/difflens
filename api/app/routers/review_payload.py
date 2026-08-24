@@ -61,6 +61,28 @@ def ai_skipped(review: Review) -> str | None:
     return pipeline_marker(review, "ai_skipped=")
 
 
+def has_marker(review: Review, token: str) -> bool:
+    return token in (review.pipeline_version or "").split()
+
+
+def ai_coverage(review: Review) -> dict[str, int] | None:
+    """How much of a repository snapshot the AI actually read."""
+    raw = pipeline_marker(review, "ai_coverage=")
+    if raw is None or "/" not in raw:
+        return None
+    covered, _, total = raw.partition("/")
+    if not covered.isdigit() or not total.isdigit():
+        return None
+    return {"files_covered": int(covered), "files_total": int(total)}
+
+
+def analyzers_skipped(review: Review) -> list[str] | None:
+    raw = pipeline_marker(review, "analyzers_skipped=")
+    if not raw:
+        return None
+    return raw.split(",")
+
+
 def pull_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
     return {
         "id": str(pull.id),
@@ -72,6 +94,23 @@ def pull_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
     }
 
 
+def repo_context(repository: Repository) -> dict[str, Any]:
+    return {
+        "id": str(repository.id),
+        "full_name": repository.full_name,
+        "default_branch": repository.default_branch,
+        "html_url": repository.html_url,
+    }
+
+
+def pull_review_context(pull: PullRequest, repository: Repository) -> dict[str, Any]:
+    return {"pull_request": pull_context(pull, repository), "repository": None}
+
+
+def repo_review_context(repository: Repository) -> dict[str, Any]:
+    return {"pull_request": None, "repository": repo_context(repository)}
+
+
 def review_item(
     review: Review,
     cancel_requested: bool,
@@ -81,10 +120,17 @@ def review_item(
 ) -> dict[str, Any]:
     return {
         "id": str(review.id),
-        "pull_request_id": str(review.pull_request_id),
-        "pull_request": context,
+        "target": "repository" if review.repository_id else "pull_request",
+        "pull_request_id": str(review.pull_request_id) if review.pull_request_id else None,
+        "repository_id": str(review.repository_id) if review.repository_id else None,
+        "pull_request": context["pull_request"],
+        "repository": context["repository"],
         "ai_model": ai_model(review),
         "ai_skipped": ai_skipped(review),
+        "ai_coverage": ai_coverage(review),
+        "ai_capped": pipeline_marker(review, "ai_capped="),
+        "findings_truncated": has_marker(review, "findings_truncated"),
+        "analyzers_skipped": analyzers_skipped(review),
         "status": review.status,
         "head_sha": review.head_sha,
         "base_sha": review.base_sha,
@@ -122,11 +168,18 @@ def feedback_verdicts(db: Session, user: User, findings: list[Finding]) -> dict[
     return {finding_id: verdict for finding_id, verdict in rows}
 
 
-def load_pull_context(db: Session, review: Review) -> dict[str, Any]:
-    # The review's FK cascades from pull_requests, so the row must exist
+def load_review_context(db: Session, review: Review) -> dict[str, Any]:
+    """The target block for either kind of review; FKs guarantee the rows."""
+    if review.pull_request_id is None:
+        repository = (
+            db.execute(select(Repository).where(Repository.id == review.repository_id))
+            .scalars()
+            .one()
+        )
+        return repo_review_context(repository)
     pull, repository = db.execute(
         select(PullRequest, Repository)
         .join(Repository, Repository.id == PullRequest.repository_id)
         .where(PullRequest.id == review.pull_request_id)
     ).one()
-    return pull_context(pull, repository)
+    return pull_review_context(pull, repository)

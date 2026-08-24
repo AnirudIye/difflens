@@ -2,7 +2,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,14 @@ MISSING = "Review not found"
 
 
 class CreateReviewRequest(BaseModel):
-    pull_request_id: UUID
+    pull_request_id: UUID | None = None
+    repository_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "CreateReviewRequest":
+        if (self.pull_request_id is None) == (self.repository_id is None):
+            raise ValueError("Provide exactly one of pull_request_id or repository_id")
+        return self
 
 
 def _load_owned_review(db: Session, user: User, review_id: UUID) -> Review:
@@ -39,6 +46,47 @@ def _cancel_requested(db: Session, review: Review) -> bool:
     return job.cancel_requested if job else False
 
 
+def _load_owned_repository(db: Session, user: User, repository_id: UUID) -> Repository | None:
+    """The repository, if this user is linked to it and it is not the demo.
+
+    The demo repository is excluded structurally: it belongs to no user, but
+    is_demo is checked anyway so a future seeding change cannot quietly make
+    the operator's demo reviewable through the authenticated path.
+    """
+    return db.execute(
+        select(Repository)
+        .join(UserRepository, UserRepository.repository_id == Repository.id)
+        .where(
+            UserRepository.user_id == user.id,
+            Repository.id == repository_id,
+            Repository.is_demo.is_(False),
+        )
+    ).scalar_one_or_none()
+
+
+def _repo_conflicts(exc: Exception) -> HTTPException:
+    if isinstance(exc, review_service.RepositoryEmpty):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "repository_empty",
+                "message": (
+                    "DiffLens could not find a commit to review: the repository may "
+                    "be empty or its default branch may have been renamed. Refresh "
+                    "from GitHub and try again."
+                ),
+            },
+        )
+    assert isinstance(exc, review_service.ReviewAlreadyExists)
+    detail: dict[str, str] = {
+        "code": "review_already_exists",
+        "message": "A live review already covers this repository at this commit",
+    }
+    if exc.review_id is not None:  # only the caller's own review id is theirs to see
+        detail["review_id"] = str(exc.review_id)
+    return HTTPException(status_code=409, detail=detail)
+
+
 @router.post("", status_code=201)
 def create_review(
     body: CreateReviewRequest,
@@ -47,6 +95,25 @@ def create_review(
     db: DbSession,
     client: GitHubDep,
 ) -> dict[str, Any]:
+    if body.repository_id is not None:
+        repository = _load_owned_repository(db, user, body.repository_id)
+        if repository is None:
+            raise not_found("Repository not found")
+        try:
+            review, job = review_service.create_repo_review(db, user, repository, client)
+        except GitHubError as exc:
+            raise github_failure(db, user, exc, "Repository not found") from exc
+        except (review_service.RepositoryEmpty, review_service.ReviewAlreadyExists) as exc:
+            raise _repo_conflicts(exc) from exc
+        queue.notify(queue.get_redis(), job.id)
+        return review_payload.review_item(
+            review,
+            cancel_requested=False,
+            findings=[],
+            verdicts={},
+            context=review_payload.repo_review_context(repository),
+        )
+
     row = db.execute(
         select(PullRequest, Repository)
         .join(Repository, Repository.id == PullRequest.repository_id)
@@ -86,7 +153,7 @@ def create_review(
         cancel_requested=False,
         findings=[],
         verdicts={},
-        context=review_payload.pull_context(pull, repository),
+        context=review_payload.pull_review_context(pull, repository),
     )
 
 
@@ -98,8 +165,36 @@ def rerun_review(
     db: DbSession,
     client: GitHubDep,
 ) -> dict[str, Any]:
-    """Review the same pull request again, superseding this finished review."""
+    """Review the same target again, superseding this finished review."""
     review = _load_owned_review(db, user, review_id)
+
+    if review.repository_id is not None:
+        repository = _load_owned_repository(db, user, review.repository_id)
+        if repository is None:
+            raise not_found("Repository not found")
+        try:
+            fresh, job = review_service.rerun_repo_review(db, user, review, repository, client)
+        except review_service.ReviewStillRunning:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "review_still_running",
+                    "message": "This review has not finished yet",
+                },
+            ) from None
+        except GitHubError as exc:
+            raise github_failure(db, user, exc, "Repository not found") from exc
+        except (review_service.RepositoryEmpty, review_service.ReviewAlreadyExists) as exc:
+            raise _repo_conflicts(exc) from exc
+        queue.notify(queue.get_redis(), job.id)
+        return review_payload.review_item(
+            fresh,
+            cancel_requested=False,
+            findings=[],
+            verdicts={},
+            context=review_payload.repo_review_context(repository),
+        )
+
     row = db.execute(
         select(PullRequest, Repository)
         .join(Repository, Repository.id == PullRequest.repository_id)
@@ -145,7 +240,7 @@ def rerun_review(
         cancel_requested=False,
         findings=[],
         verdicts={},
-        context=review_payload.pull_context(pull, repository),
+        context=review_payload.pull_review_context(pull, repository),
     )
 
 
@@ -158,7 +253,7 @@ def get_review(review_id: UUID, user: CurrentUser, db: DbSession) -> dict[str, A
         _cancel_requested(db, review),
         findings,
         review_payload.feedback_verdicts(db, user, findings),
-        review_payload.load_pull_context(db, review),
+        review_payload.load_review_context(db, review),
     )
 
 
@@ -178,5 +273,5 @@ def cancel_review(review_id: UUID, user: CurrentUser, db: DbSession) -> dict[str
         _cancel_requested(db, review),
         findings,
         review_payload.feedback_verdicts(db, user, findings),
-        review_payload.load_pull_context(db, review),
+        review_payload.load_review_context(db, review),
     )

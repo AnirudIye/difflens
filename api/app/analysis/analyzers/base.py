@@ -7,6 +7,12 @@ from typing import Protocol
 from app.analysis.diffs.parser import DiffIndex
 from app.analysis.models import Finding
 
+# Above this many characters of file arguments, subprocess analyzers scan the
+# workspace root instead of splatting paths onto argv: Windows caps a command
+# line around 32K characters, and a repository snapshot can hold thousands of
+# paths. Output-side filtering keeps the findings identical either way.
+ANALYZER_ARGV_CHAR_CAP = 100_000
+
 
 class Analyzer(Protocol):
     name: str

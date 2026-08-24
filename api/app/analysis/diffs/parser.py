@@ -17,12 +17,16 @@ class FileDiff:
         status: FileStatus,
         changed_lines: set[int],
         context_ranges: list[tuple[int, int]],
+        all_changed: bool = False,
     ) -> None:
         self.path = path
         self.old_path = old_path
         self.status = status
         self.changed_lines = changed_lines
         self.context_ranges = context_ranges
+        # A repository snapshot treats every line as changed without holding a
+        # set of every line number; touches_change honors this flag directly
+        self.all_changed = all_changed
 
 
 class DiffIndex:

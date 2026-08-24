@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.deps import CurrentUser, DbSession, GitHubDep
-from app.models import PullRequest, Repository, User, UserRepository
+from app.models import PullRequest, Repository, Review, User, UserRepository
 from app.routers.github_errors import github_failure, not_found
 from app.services import repo_service
 from app.services.github_client import GitHubError
@@ -62,6 +62,46 @@ def list_repositories(
     else:
         repos = repo_service.list_user_repositories(db, user)
     return {"items": [_repo_item(repo) for repo in repos]}
+
+
+@router.get("/{repo_id}")
+def get_repository(repo_id: UUID, user: CurrentUser, db: DbSession) -> dict[str, Any]:
+    """One repository plus the caller's latest snapshot review of it.
+
+    The latest-review block is the only handle on a finished repo review
+    (there is no reviews list), so the repository page can link back to it.
+    Scoped to the caller: another user's review of the same repository is
+    not theirs to see.
+    """
+    repo = db.execute(
+        select(Repository)
+        .join(UserRepository, UserRepository.repository_id == Repository.id)
+        .where(UserRepository.user_id == user.id, Repository.id == repo_id)
+    ).scalar_one_or_none()
+    if repo is None:
+        raise _not_found()
+    latest = db.execute(
+        select(Review)
+        .where(
+            Review.repository_id == repo.id,
+            Review.user_id == user.id,
+            Review.pull_request_id.is_(None),
+        )
+        .order_by(Review.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    item = _repo_item(repo)
+    item["latest_repo_review"] = (
+        {
+            "id": str(latest.id),
+            "status": latest.status,
+            "head_sha": latest.head_sha,
+            "created_at": latest.created_at,
+        }
+        if latest
+        else None
+    )
+    return item
 
 
 @router.get("/{repo_id}/pull-requests")

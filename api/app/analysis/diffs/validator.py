@@ -25,6 +25,12 @@ def touches_change(index: DiffIndex, path: str, start: int, end: int, pad: int =
     file_diff = index.files.get(path)
     if file_diff is None:
         return False
+    if file_diff.all_changed:
+        # A snapshot file: every line counts as changed. A consequence worth
+        # knowing: the detect-secrets confidence downgrade for out-of-diff
+        # matches never fires in snapshot mode, so every current secret
+        # reports at full confidence, which is correct for a snapshot.
+        return True
     return any(start - pad <= line <= end + pad for line in file_diff.changed_lines)
 
 

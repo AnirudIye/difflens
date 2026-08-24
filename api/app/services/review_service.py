@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
+    LIVE_REPO_REVIEW_INDEX,
     LIVE_REVIEW_INDEX,
     PullRequest,
     Repository,
@@ -23,7 +24,7 @@ from app.models import (
     ReviewJob,
     User,
 )
-from app.services.github_client import GitHubClient
+from app.services.github_client import GitHubClient, GitHubNotFound
 from app.services.repo_service import apply_pull_payload
 
 log = structlog.get_logger()
@@ -34,6 +35,11 @@ TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled")
 
 class PullRequestClosed(Exception):
     pass
+
+
+class RepositoryEmpty(Exception):
+    """No commit to review: the repository is empty or its default branch
+    is gone (renamed, deleted). Either way there is nothing to pin."""
 
 
 class ReviewAlreadyExists(Exception):
@@ -98,6 +104,75 @@ def _violated_constraint(exc: IntegrityError) -> str | None:
     return getattr(diagnostics, "constraint_name", None)
 
 
+def _insert_queued(
+    db: Session,
+    user: User,
+    review: Review,
+    live_index: str,
+    winner_where: tuple,
+    log_target: dict[str, str],
+) -> tuple[Review, ReviewJob]:
+    """Insert one queued review plus its job; translate the live-index race.
+
+    Shared by the pull request and repository paths, which differ only in
+    which partial unique index arbitrates and how the winning review is
+    found. Behavior on the PR path is byte-identical to before the split.
+    """
+    db.add(review)
+    try:
+        db.flush()
+        # After the flush, never before: reviews.id comes from the database
+        # (server_default gen_random_uuid), so it is None until then
+        job = ReviewJob(review_id=review.id)
+        db.add(job)
+        db.commit()
+    except IntegrityError as exc:
+        # Read before the rollback, so which index refused the write is
+        # settled by the database rather than inferred from a second query
+        conflicted_on = _violated_constraint(exc)
+        db.rollback()
+        if conflicted_on != live_index:
+            # Only this index means "someone else got there first". The commit
+            # above flushes the WHOLE session, not just these two rows, so a
+            # refetched pull request or a superseded review can be what
+            # Postgres actually refused; classifying on the presence of a live
+            # review rather than on the constraint would dress any of those as
+            # a 409. So would uq_jobs_one_live_per_review, which cannot lose a
+            # race at all, because reviews.id is a fresh gen_random_uuid on
+            # every call and no earlier job can reference it. Telling the
+            # caller to wait for a review that does not exist, with nothing in
+            # the log, is worse than the 500 this used to be.
+            log.error(
+                "review_insert_failed_unexpectedly",
+                constraint=conflicted_on,
+                head_sha=review.head_sha,
+                user_id=str(user.id),
+                **log_target,
+            )
+            raise
+        existing = db.execute(
+            select(Review).where(
+                *winner_where,
+                Review.head_sha == review.head_sha,
+                Review.status.in_(LIVE_REVIEW_STATUSES),
+            )
+        ).scalar_one_or_none()
+        # The winner can leave the live statuses between the failed INSERT and
+        # that read, which is why this is logged either way: a conflict with
+        # nothing left to name is the interesting one.
+        log.warning(
+            "review_insert_conflict",
+            head_sha=review.head_sha,
+            winner_still_live=existing is not None,
+            **log_target,
+        )
+        if existing is not None:
+            raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
+        raise ReviewAlreadyExists(None) from exc
+
+    return review, job
+
+
 def insert_review(
     db: Session, user: User, pull: PullRequest, head_sha: str, base_sha: str
 ) -> tuple[Review, ReviewJob]:
@@ -116,59 +191,62 @@ def insert_review(
         base_sha=base_sha,
         status="queued",
     )
-    db.add(review)
-    try:
-        db.flush()
-        # After the flush, never before: reviews.id comes from the database
-        # (server_default gen_random_uuid), so it is None until then
-        job = ReviewJob(review_id=review.id)
-        db.add(job)
-        db.commit()
-    except IntegrityError as exc:
-        # Read before the rollback, so which index refused the write is
-        # settled by the database rather than inferred from a second query
-        conflicted_on = _violated_constraint(exc)
-        db.rollback()
-        if conflicted_on != LIVE_REVIEW_INDEX:
-            # Only this index means "someone else got there first". The commit
-            # above flushes the WHOLE session, not just these two rows, so a
-            # refetched pull request or a superseded review can be what
-            # Postgres actually refused; classifying on the presence of a live
-            # review rather than on the constraint would dress any of those as
-            # a 409. So would uq_jobs_one_live_per_review, which cannot lose a
-            # race at all, because reviews.id is a fresh gen_random_uuid on
-            # every call and no earlier job can reference it. Telling the
-            # caller to wait for a review that does not exist, with nothing in
-            # the log, is worse than the 500 this used to be.
-            log.error(
-                "review_insert_failed_unexpectedly",
-                constraint=conflicted_on,
-                pull_request_id=str(pull.id),
-                head_sha=head_sha,
-                user_id=str(user.id),
-            )
-            raise
-        existing = db.execute(
-            select(Review).where(
-                Review.pull_request_id == pull.id,
-                Review.head_sha == head_sha,
-                Review.status.in_(LIVE_REVIEW_STATUSES),
-            )
-        ).scalar_one_or_none()
-        # The winner can leave the live statuses between the failed INSERT and
-        # that read, which is why this is logged either way: a conflict with
-        # nothing left to name is the interesting one.
-        log.warning(
-            "review_insert_conflict",
-            pull_request_id=str(pull.id),
-            head_sha=head_sha,
-            winner_still_live=existing is not None,
-        )
-        if existing is not None:
-            raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
-        raise ReviewAlreadyExists(None) from exc
+    return _insert_queued(
+        db,
+        user,
+        review,
+        LIVE_REVIEW_INDEX,
+        (Review.pull_request_id == pull.id,),
+        {"pull_request_id": str(pull.id)},
+    )
 
-    return review, job
+
+def insert_repo_review(
+    db: Session, user: User, repository: Repository, head_sha: str
+) -> tuple[Review, ReviewJob]:
+    """Insert one queued repository snapshot review at a pinned commit."""
+    review = Review(
+        user_id=user.id,
+        repository_id=repository.id,
+        head_sha=head_sha,
+        base_sha=None,
+        status="queued",
+    )
+    return _insert_queued(
+        db,
+        user,
+        review,
+        LIVE_REPO_REVIEW_INDEX,
+        (Review.repository_id == repository.id,),
+        {"repository_id": str(repository.id)},
+    )
+
+
+def create_repo_review(
+    db: Session, user: User, repository: Repository, client: GitHubClient
+) -> tuple[Review, ReviewJob]:
+    """Pin the default branch's current head and enqueue exactly one job.
+
+    Mirrors create_review's shape: refresh from GitHub first so the review
+    describes the repository as it is now, then let the live index arbitrate.
+    Raises RepositoryEmpty, ReviewAlreadyExists, or any GitHubError.
+    """
+    head_sha = _resolve_default_branch_head(db, repository, client)
+    return insert_repo_review(db, user, repository, head_sha)
+
+
+def _resolve_default_branch_head(db: Session, repository: Repository, client: GitHubClient) -> str:
+    payload = client.get_repo(repository.full_name)
+    branch = payload.get("default_branch") or repository.default_branch
+    if branch and branch != repository.default_branch:
+        repository.default_branch = branch
+        db.commit()  # keep the refreshed row even if the head lookup fails
+    if not branch:
+        raise RepositoryEmpty()
+    try:
+        return client.get_branch_head(repository.full_name, branch)
+    except GitHubNotFound as exc:
+        raise RepositoryEmpty() from exc
 
 
 def _insert_review(
@@ -211,6 +289,32 @@ def rerun_review(
 
     supersede_completed(db, review)
     return _insert_review(db, user, pull, payload)
+
+
+def rerun_repo_review(
+    db: Session,
+    user: User,
+    review: Review,
+    repository: Repository,
+    client: GitHubClient,
+) -> tuple[Review, ReviewJob]:
+    """Review this repository again, superseding the finished review.
+
+    The head is re-resolved rather than reused: "run again" on a repository
+    naturally means the default branch as it is now, so after new commits
+    land the new review covers the new head. Same supersede-then-insert
+    ordering and the same guarded UPDATE as the pull request rerun.
+    """
+    if review.status not in TERMINAL_REVIEW_STATUSES:
+        raise ReviewStillRunning()
+
+    # Before the supersede, for the same reason refetch_open_pull runs before
+    # it on the PR path: a refused rerun must not leave the old review
+    # superseded with nothing replacing it.
+    head_sha = _resolve_default_branch_head(db, repository, client)
+
+    supersede_completed(db, review)
+    return insert_repo_review(db, user, repository, head_sha)
 
 
 def supersede_completed(db: Session, review: Review) -> None:
