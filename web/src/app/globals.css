@@ -10,6 +10,10 @@
   --ink-soft: #605c53;
   --accent: #1a7f37;
   --rule: #e2dfd7;
+  /* WCAG 2.2 SC 1.4.11 wants 3:1 for the visual boundary of a control.
+     --rule is 1.23:1 here, which is right for a hairline between sections
+     and wrong for the edge of an input. Measured: 3.18:1 on --paper. */
+  --control-border: #8f8a7e;
   --sev-critical: #b42318;
   --sev-high: #b54708;
   --sev-medium: #8a6a00;
@@ -27,6 +31,7 @@
     --ink-soft: #97938a;
     --accent: #4ac26b;
     --rule: #29271f;
+    --control-border: #6b675c; /* measured 3.32:1 on --paper */
     --sev-critical: #f97066;
     --sev-high: #f7b27a;
     --sev-medium: #d9c26a;
@@ -44,6 +49,7 @@
   --ink-soft: #97938a;
   --accent: #4ac26b;
   --rule: #29271f;
+  --control-border: #6b675c; /* measured 3.32:1 on --paper */
   --sev-critical: #f97066;
   --sev-high: #f7b27a;
   --sev-medium: #d9c26a;
@@ -181,7 +187,7 @@ body {
   padding: 0.375rem 0.875rem;
   background: transparent;
   color: var(--ink-soft);
-  border-color: var(--rule);
+  border-color: var(--control-border);
   font-size: 0.875rem;
   font-weight: 500;
 }
@@ -453,7 +459,7 @@ body {
   padding: 0.5rem 0.75rem;
   background: transparent;
   color: var(--ink);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   font: inherit;
   font-size: 0.9375rem;
@@ -1038,7 +1044,7 @@ body {
   padding: 0.5rem 0.75rem;
   background: transparent;
   color: var(--ink);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   font: inherit;
   font-size: 0.9375rem;

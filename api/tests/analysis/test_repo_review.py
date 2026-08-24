@@ -502,3 +502,35 @@ def test_ruff_argv_fallback_produces_identical_findings(tmp_path, monkeypatch):
     assert [f.model_dump() for f in listed] == [f.model_dump() for f in scanned]
     assert listed, "the fixture violation vanished; the comparison proves nothing"
     assert any(f.rule_id == "F401" for f in listed)
+
+
+def test_a_changed_file_the_pipeline_never_saw_is_named_in_the_summary(tmp_path):
+    """A review that skipped files still printed "the changed code passes all
+    deterministic checks" underneath, which is a claim about code it never
+    read."""
+    from app.analysis.models import ReviewJob as AnalysisJob
+    from app.analysis.pipeline import run_review
+
+    (tmp_path / "kept.py").write_text("value = 1\n", encoding="utf-8")
+    diff = (
+        "diff --git a/kept.py b/kept.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/kept.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+value = 1\n"
+    )
+
+    result = run_review(
+        AnalysisJob(
+            repo_full_name="octocat/alpha",
+            pr_title="a change",
+            base_sha="b" * 40,
+            head_sha="h" * 40,
+            diff_text=diff,
+            workspace=tmp_path,
+            files_not_reviewed=2,
+        )
+    )
+
+    assert "2 changed files could not be reviewed" in result.summary

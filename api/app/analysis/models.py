@@ -49,6 +49,11 @@ class ReviewJob(BaseModel):
     ai_cap_reason: Literal["keyless"] | None = None
     # Whose key pays, so a provider rejection blames the party who can fix it
     ai_source: Literal["user", "server"] = "server"
+    # Changed files the ingestion step could not hand to the analyzers at all
+    # (GitHub returned no patch, or the file was too large to fetch). Counted
+    # rather than dropped, because a review that silently skips a file still
+    # prints "all deterministic checks" underneath.
+    files_not_reviewed: int = 0
 
 
 class ReviewStats(BaseModel):

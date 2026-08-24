@@ -121,13 +121,17 @@ def populate_workspace(
     head_sha: str,
     files: list[dict],
     workspace: Path,
-) -> None:
+) -> int:
     """Fetch head-state contents of changed files into the workspace.
 
     A file GitHub will not inline (>1MB) is skipped: the analyzers simply do
     not see it. A path that would escape the workspace is hostile input from
     the diff and is dropped before any request is made for it.
+
+    Returns how many changed files were skipped, so the review can say so
+    rather than reporting a clean pass over code it never read.
     """
+    skipped = 0
     root = workspace.resolve()
     for item in files:
         if item["status"] == "removed" or not item.get("patch"):
@@ -136,13 +140,16 @@ def populate_workspace(
         destination = (root / rel).resolve()
         if not destination.is_relative_to(root):
             log.warning("workspace_escape_dropped", path=rel)
+            skipped += 1
             continue
         blob = client.get_file_content(full_name, rel, head_sha)
         if blob is None:
             log.info("workspace_file_skipped", path=rel)
+            skipped += 1
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(blob)
+    return skipped
 
 
 def _persist_success(
@@ -470,8 +477,15 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                     diff_text = build_diff_text(files)
                     with tempfile.TemporaryDirectory(prefix="difflens-review-") as tmp:
                         workspace = Path(tmp)
-                        populate_workspace(
+                        not_reviewed = populate_workspace(
                             client, repository.full_name, review.head_sha, files, workspace
+                        )
+                        # A changed file GitHub returns without a patch never
+                        # enters the diff index, so no analyzer ever sees it
+                        not_reviewed += sum(
+                            1
+                            for item in files
+                            if item["status"] != "removed" and not item.get("patch")
                         )
                         if outcome := _checkpoint(db, job, worker_id):
                             return outcome
@@ -486,6 +500,7 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                                 workspace=workspace,
                                 mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
                                 ai_source=ai_source,  # type: ignore[arg-type]
+                                files_not_reviewed=not_reviewed,
                             ),
                             provider=ai_provider,
                             ai_config_errors=AI_CONFIG_ERRORS,

@@ -56,6 +56,16 @@ def sync_user_repositories(db: Session, user: User, client: GitHubClient) -> lis
 
     synced: list[Repository] = []
     for item in payload:
+        if item.get("private"):
+            # The empty OAuth scope means GitHub should never hand us one of
+            # these, and /privacy states as fact that private repositories are
+            # not touched. Filtering here rather than trusting that is the
+            # difference between a policy sentence and an enforced one: a
+            # scope granted in some other session, or an account GitHub
+            # decides to be generous about, would otherwise be listed and
+            # reviewable, and a repo review ships whole-file contents to an
+            # AI provider.
+            continue
         repo = existing.get(item["id"])
         if repo is None:
             repo = Repository(github_id=item["id"], full_name=item["full_name"])

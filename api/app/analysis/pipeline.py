@@ -299,6 +299,12 @@ def run_review(
             )
             if note:
                 notes.append(note)
+        if job.files_not_reviewed:
+            notes.append(
+                f"{_plural(job.files_not_reviewed, 'changed file')} could not be "
+                "reviewed: GitHub returned no diff for it, or it was too large "
+                "to fetch."
+            )
         if stats.truncated:
             # Computed since day one and never surfaced; at repository scale
             # hitting the cap is routine rather than exotic, so it speaks now

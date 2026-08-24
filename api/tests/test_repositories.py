@@ -25,17 +25,20 @@ def test_sync_persists_repositories_and_is_idempotent(client, db, github, make_u
     first = client.get("/repositories")
     assert first.status_code == 200
     items = first.json()["items"]
-    assert [item["full_name"] for item in items] == ["octocat/alpha", "octocat/beta"]
-    assert [item["private"] for item in items] == [False, True]
+    # octocat/beta is private in the fixture and is filtered out: the empty
+    # OAuth scope means it should never arrive, and the privacy policy states
+    # as fact that private repositories are not touched
+    assert [item["full_name"] for item in items] == ["octocat/alpha"]
+    assert [item["private"] for item in items] == [False]
 
-    assert db.scalar(select(func.count()).select_from(Repository)) == 2
+    assert db.scalar(select(func.count()).select_from(Repository)) == 1
     assert (
         db.scalar(
             select(func.count())
             .select_from(UserRepository)
             .where(UserRepository.user_id == user.id)
         )
-        == 2
+        == 1
     )
 
     first_synced = {item["full_name"]: item["last_synced_at"] for item in items}
@@ -43,9 +46,9 @@ def test_sync_persists_repositories_and_is_idempotent(client, db, github, make_u
     second = client.get("/repositories")
     assert second.status_code == 200
     resynced = second.json()["items"]
-    assert len(resynced) == 2
-    assert db.scalar(select(func.count()).select_from(Repository)) == 2
-    assert db.scalar(select(func.count()).select_from(UserRepository)) == 2
+    assert len(resynced) == 1
+    assert db.scalar(select(func.count()).select_from(Repository)) == 1
+    assert db.scalar(select(func.count()).select_from(UserRepository)) == 1
     for item in resynced:
         assert datetime.fromisoformat(item["last_synced_at"]) > datetime.fromisoformat(
             first_synced[item["full_name"]]
@@ -59,7 +62,7 @@ def test_sync_false_serves_linked_rows_without_github(client, github, make_user_
 
     response = client.get("/repositories", params={"sync": "false"})
     assert response.status_code == 200
-    assert len(response.json()["items"]) == 2
+    assert len(response.json()["items"]) == 1
     assert github.calls == []
 
 
@@ -265,3 +268,19 @@ def test_linking_a_repository_twice_is_not_an_error(db, github, make_user_with_s
         select(func.count()).select_from(UserRepository).where(UserRepository.user_id == user.id)
     ).scalar()
     assert linked == len(repo_ids)  # no duplicates, no error
+
+
+def test_private_repositories_are_never_listed(client, github, make_user_with_session):
+    """The privacy policy states as fact that private repositories are not
+    touched, and a repository review ships whole-file contents to an AI
+    provider. The empty OAuth scope should make this unreachable; enforcing
+    it here is what turns the sentence into a guarantee."""
+    make_user_with_session("private-owner")
+    assert any(repo["private"] for repo in github.repos), "fixture must contain a private repo"
+
+    listed = client.get("/repositories?sync=true")
+
+    assert listed.status_code == 200
+    names = {item["full_name"] for item in listed.json()["items"]}
+    private_names = {repo["full_name"] for repo in github.repos if repo["private"]}
+    assert names.isdisjoint(private_names)
