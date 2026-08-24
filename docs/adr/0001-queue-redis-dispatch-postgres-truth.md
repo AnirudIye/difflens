@@ -79,3 +79,18 @@ latency argument does not hold. Redis buys a sub-second start on a warm containe
   `docs/DEPLOYMENT.md:131` notes it otherwise autosuspends.
 
 The guarded claim would already take a second worker; only the single container prevents it.
+
+## Amended 2026-08-24
+
+Migration 0008 rekeys `uq_reviews_pr_sha_live` on `(user_id, pull_request_id, head_sha)`, and its
+repository sibling on `(user_id, repository_id, head_sha)`; the predicates are unchanged. The
+decision above is untouched. The index is still the one refusal `_insert_queued` translates into a
+409 rather than a 500, still what makes a double click idempotent, and still the structural cap on
+anonymous demo work, because every demo review belongs to the single demo user, so one live demo
+job remains the ceiling.
+
+What the target-only key also did was block strangers. A completed review counts as live and only
+its owner can supersede it, so one account's finished review of a public pull request refused
+every other account that same commit permanently: a 409 carrying no review id, about findings the
+caller is not permitted to read, and no retry that could clear it. That was never a property this
+ADR relied on, and it is the part migration 0008 removes.

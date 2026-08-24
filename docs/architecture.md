@@ -74,9 +74,10 @@ machine, and the same pipeline with a few steps swapped:
    base commit: `ck_reviews_one_target` makes every review target exactly one of a pull request
    or a repository, and `ck_reviews_pr_has_base` lets only repository reviews omit a base. An
    empty repository or a vanished default branch is refused as a 409, not a 500. A second partial
-   unique index, `uq_reviews_repo_sha_live`, permits one live review per (repository, commit);
-   it exists for correctness, not symmetry, because Postgres treats NULLs as distinct in unique
-   indexes and the PR index fails open once `pull_request_id` is nullable.
+   unique index, `uq_reviews_repo_sha_live`, permits one live review per user per (repository,
+   commit); it exists for correctness, not symmetry, because Postgres treats NULLs as distinct in
+   unique indexes and the PR index fails open once `pull_request_id` is nullable. Both live
+   indexes carry `user_id` as of migration 0008; the storage section below says why.
 2. Step 5 becomes one tarball instead of per-file contents calls: the worker streams the
    repository archive at the pinned SHA (100MB download ceiling), then extracts it defensively:
    regular files only, symlinks skipped, path-escape entries dropped, vendored trees and `.git`
@@ -112,7 +113,7 @@ Only two things differ, and both are decided in one branch in `worker/runner.py`
 - **Step 5 does not happen.** The diff and the file contents come from `app/demo/sample/`, which ships in the image because the Dockerfile copies `app/`. (`api/tests/` does not ship, which is why the demo sample could not simply reuse the regression fixtures.) The diff is synthesized from those files at load time rather than stored beside them, so there is only one copy of the content and no way for the two to drift.
 - **Step 7 replays a recorded response** instead of calling a provider, so a demo run costs nothing however often the button is pressed. The recorded candidates still go through step 8's validation chain, so three of them merge with analyzer findings into `hybrid` results through production code rather than being labelled that way.
 
-The demo user holds no `provider_connections` row, so the demo path has no token to misuse even if that branch were somehow entered wrongly. Scope is a column: `repositories.is_demo`, with a partial unique index permitting exactly one demo repository, and the public routes query from it rather than from an id in the URL. Concurrency needs no new machinery either: `uq_reviews_pr_sha_live` already permits one live review per (pull request, head sha), and the demo is one pull request at one commit, so anonymous visitors cannot produce more than one demo job at a time no matter how the rate limiter behaves.
+The demo user holds no `provider_connections` row, so the demo path has no token to misuse even if that branch were somehow entered wrongly. Scope is a column: `repositories.is_demo`, with a partial unique index permitting exactly one demo repository, and the public routes query from it rather than from an id in the URL. Concurrency needs no new machinery either: `uq_reviews_pr_sha_live` already permits one live review per user per (pull request, head sha), and every demo review belongs to the single synthetic demo user, reviewing one pull request at one commit, so anonymous visitors cannot produce more than one demo job at a time no matter how the rate limiter behaves.
 
 ## Storage
 
@@ -131,9 +132,11 @@ Postgres on Neon. One line per table:
 
 Three partial unique indexes carry the concurrency model:
 
-- one live (non-terminal) review per (pull_request_id, head_sha): the same snapshot is never reviewed twice concurrently
-- one live review per (repository_id, head_sha), the repository-review sibling. It is correctness, not symmetry: Postgres treats NULLs as distinct in unique indexes, so the PR index fails open for reviews whose pull_request_id is NULL
+- one live (non-terminal) review per (user_id, pull_request_id, head_sha): one user never has the same snapshot under review twice at once
+- one live review per (user_id, repository_id, head_sha), the repository-review sibling. It is correctness, not symmetry: Postgres treats NULLs as distinct in unique indexes, so the PR index fails open for reviews whose pull_request_id is NULL
 - one live job per review: a review can be retried, never doubled
+
+Both review indexes gained `user_id` in migration 0008 (2026-08-24). Keyed on the target alone they blocked strangers rather than duplicates: a completed review counts as live and only its owner can supersede it, so one account's finished review of a public repository or pull request refused every other account that same commit permanently. The second user got a 409 that carried no review id (a foreign review's id is deliberately withheld), naming findings they are not permitted to read (a foreign review 404s), and retrying never cleared it, because the blocking review was already terminal. On a product whose subject is public repositories, two people reviewing one commit is ordinary rather than exotic. Per-user scoping keeps everything the concurrency model actually rests on: a double click is still idempotent, and anonymous work through `/demo` is still capped at one live job, because every demo review belongs to the one demo user.
 
 ## Queue design and trade-offs
 

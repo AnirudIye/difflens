@@ -130,3 +130,28 @@ split is decided by `ai_source`, which `resolve_provider` already returned for b
   even if extracted. What is missing is the sentence saying so. The AI-stage equivalent
   (`ai_files_skipped_large`) is counted into the coverage total; the extraction one is not
   surfaced at all.
+
+## Amended 2026-08-24
+
+Later the same day, migration 0008 scoped both live indexes to the user who started the review:
+`uq_reviews_pr_sha_live` is now `(user_id, pull_request_id, head_sha)` and
+`uq_reviews_repo_sha_live` is now `(user_id, repository_id, head_sha)`, predicates unchanged. The
+decision above stands whole, including the reason the second index exists at all: with
+`pull_request_id` nullable the PR index still fails open for repository reviews, so the repository
+index is still what constrains them.
+
+The scope of the key changed; the property did not. Keyed on the target alone, the index blocked
+strangers rather than duplicates. A completed review counts as live and only its owner can
+supersede it, so one user's finished review of a public repository at a commit refused every other
+user that commit forever. The second user's 409 carried no review id, because a foreign review's
+id is deliberately withheld, described findings they are not permitted to read, because a foreign
+review 404s, and never cleared, because the blocking review was already terminal. On a product
+whose whole subject is public repositories, two people reviewing one commit is ordinary rather
+than exotic.
+
+The structural cap this ADR leans on survives, because it was never about global uniqueness. At
+most one live review per user per target per commit still makes a double click idempotent, and
+still bounds anonymous work through `/demo`: every demo review belongs to the one synthetic demo
+user, so one live demo job remains the ceiling even when the rate limiter fails open (gap 2).
+`_insert_queued` now also filters the winner lookup by `Review.user_id`, so the id it returns in a
+409 is always the caller's own review.

@@ -137,6 +137,12 @@ Redis outage, which matters because `rate_limit.check` deliberately fails
 open: without the index, failing open on an anonymous endpoint would mean
 unlimited anonymous job creation exactly when the system is already unhealthy.
 
+[Amended 2026-08-24: migration 0008 rekeyed the index on `(user_id,
+pull_request_id, head_sha)`, so it is one live review per user per (pull
+request, head sha). The conclusion in this section is unchanged: every demo
+review belongs to the single demo user, so the demo still has exactly one live
+slot. See the amendment to ADR 0005 for why the global key had to go.]
+
 Given that floor, per-IP limiting is fairness rather than safety: it stops one
 visitor monopolizing the single demo slot. It reuses `rate_limit.check`, which
 already accepts an arbitrary identity string, with a new `Limit` and the

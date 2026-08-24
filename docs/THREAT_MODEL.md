@@ -5,7 +5,9 @@ against, not an aspirational one. Where a control does not exist, it is in
 "Accepted gaps" with the reason, because a threat model whose every row says
 "mitigated" is a marketing document. Extended 2026-08-24 when reviews of
 whole repository snapshots landed (ADR 0005); that surface has its own
-section below.
+section below. Amended the same day when both live-review indexes were scoped
+to the user who started the review (migration 0008); the rows that argument
+touches say so where they appear.
 
 DiffLens reads other people's source code and hands it to a language model.
 That single sentence produces most of what follows: everything inside a pull
@@ -82,13 +84,18 @@ recovery flow to attack.
 - Job state transitions are guarded UPDATEs that include the expected current
   state and the owning worker id (`api/worker/jobs.py`). Two workers racing
   produce one winner and one no-op, structurally rather than by convention.
-- One live review per (pull request, head SHA), one live review per
-  (repository, head SHA), and one live job per review are partial unique
-  indexes in Postgres, not application checks. The repository index is not a
-  copy of the PR one for symmetry: Postgres treats NULLs as distinct in
+- One live review per user per (pull request, head SHA), one live review per
+  user per (repository, head SHA), and one live job per review are partial
+  unique indexes in Postgres, not application checks. The repository index is
+  not a copy of the PR one for symmetry: Postgres treats NULLs as distinct in
   unique indexes, so once `pull_request_id` is nullable the PR index fails
   open for repository reviews, and `uq_reviews_repo_sha_live` is what
-  actually constrains them.
+  actually constrains them. Both indexes gained `user_id` in migration 0008
+  (2026-08-24). Keyed on the target alone they were not a tampering control
+  at all but a cross-user block: a completed review counts as live and only
+  its owner can supersede it, so one account's finished review of a public
+  target permanently refused every other account that commit, with a 409 that
+  named no review id and never cleared.
 - The workspace built from the GitHub contents API rejects paths that would
   escape it (`api/worker/runner.py`), so a file named `../../etc/passwd` in a
   pull request writes nothing. The tarball a repository review extracts gets
@@ -150,11 +157,14 @@ per-user data.
   tarball at download, 200,000 archive members, 20,000 extracted files, 200MB
   written) rather than truncated; see the tarball section below.
 - `uq_reviews_repo_sha_live` extends the demo's structural floor to
-  repository reviews: one live review per (repository, commit), enforced by
-  Postgres however the rate limiter behaves. Repository reviews are
-  authenticated-only, so this sits under the per-user limit rather than
-  replacing it, and it is what turns "press the button in a loop" into 409s
-  instead of a queue of tarball downloads.
+  repository reviews: one live review per user per (repository, commit),
+  enforced by Postgres however the rate limiter behaves. Repository reviews
+  are authenticated-only, so this sits under the per-user limit rather than
+  replacing it, and per-user scoping costs the argument nothing: the account
+  whose loop it stops is the account the index is keyed on. It is what turns
+  "press the button in a loop" into 409s instead of a queue of tarball
+  downloads. What it deliberately no longer does is stop a second user from
+  reviewing the same commit, which was never denial-of-service protection.
 - GitHub's undocumented 300-file compare cap fails the review honestly rather
   than reviewing a silently truncated diff.
 - Analyzers run under timeouts and are isolated from each other; one hung tool
@@ -164,14 +174,17 @@ per-user data.
 - Persisted findings are capped at 100 per review.
 - **The public demo is the only unauthenticated endpoint that starts work**,
   and its cap is structural rather than a check. The partial unique index
-  `uq_reviews_pr_sha_live` permits one live review per (pull request, head
-  sha); the demo is one pull request at one commit, so at most one demo job
-  can be queued or running at any instant, enforced by Postgres. Pressing the
-  button in a loop earns 409s, not a job flood. This matters specifically
-  because the rate limiter fails open (gap 2): on an anonymous endpoint,
-  failing open would otherwise mean unlimited job creation exactly when Redis
-  is already unhealthy. The per-IP limit on the rerun is fair sharing layered
-  on top of that floor, not the floor itself.
+  `uq_reviews_pr_sha_live` permits one live review per user per (pull
+  request, head sha); every demo review belongs to the one synthetic demo
+  user (`github_id` 0) at one pull request and one commit, so at most one
+  demo job can be queued or running at any instant, enforced by Postgres.
+  Scoping the index per user in migration 0008 does not loosen this, because
+  anonymous visitors share that single identity and therefore share its
+  single slot. Pressing the button in a loop earns 409s, not a job flood.
+  This matters specifically because the rate limiter fails open (gap 2): on
+  an anonymous endpoint, failing open would otherwise mean unlimited job
+  creation exactly when Redis is already unhealthy. The per-IP limit on the
+  rerun is fair sharing layered on top of that floor, not the floor itself.
 - Finished demo reviews are pruned to the newest few, so anonymous reruns
   cannot grow the database without bound (`app/demo/service.py`).
 - The demo runs the offline replay provider, never a live model, so no volume

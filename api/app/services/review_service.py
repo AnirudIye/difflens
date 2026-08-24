@@ -175,9 +175,12 @@ def _insert_queued(
             winner_still_live=existing is not None,
             **log_target,
         )
-        if existing is not None:
-            raise ReviewAlreadyExists(existing.id if existing.user_id == user.id else None) from exc
-        raise ReviewAlreadyExists(None) from exc
+        # The id is always this caller's own to see: the live index is scoped
+        # to the user, so the review that beat them is theirs. The withheld
+        # case that used to live here was a foreign winner, which the index
+        # can no longer produce. None still happens, and means the winner left
+        # the live statuses before the read above found it.
+        raise ReviewAlreadyExists(existing.id if existing is not None else None) from exc
 
     return review, job
 
