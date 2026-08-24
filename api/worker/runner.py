@@ -381,8 +381,9 @@ def _run_repository_review(
             # AI stage never counted them. Folding them into the total keeps
             # the coverage sentence from claiming a repository was fully read
             # when part of it was left in the tarball.
-            result.stats.ai_files_total += snapshot_stats.files_skipped_large
-            result.stats.ai_files_skipped_large += snapshot_stats.files_skipped_large
+            unread = snapshot_stats.files_skipped_large + snapshot_stats.files_unwritable
+            result.stats.ai_files_total += unread
+            result.stats.ai_files_skipped_large += unread
             return result
 
 

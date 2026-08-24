@@ -44,6 +44,10 @@ class SnapshotTooLarge(Exception):
 class SnapshotStats:
     files_extracted: int = 0
     files_skipped_large: int = 0
+    # Members the filesystem refused, or that could not be represented here
+    # at all: a name with a character this OS forbids, a component past the
+    # length limit, a file colliding with a directory of the same name.
+    files_unwritable: int = 0
     entries_seen: int = 0
     bytes_written: int = 0
 
@@ -73,9 +77,16 @@ def extract_snapshot(tar_path: Path, workspace: Path) -> SnapshotStats:
             if member.size > MAX_FILE_BYTES:
                 stats.files_skipped_large += 1
                 continue
-            destination = (root / rel).resolve()
+            try:
+                destination = (root / rel).resolve()
+            except OSError:
+                # Resolving can itself fail on a name this OS rejects
+                log.warning("workspace_name_unusable", path=member.name)
+                stats.files_unwritable += 1
+                continue
             if not destination.is_relative_to(root):
                 log.warning("workspace_escape_dropped", path=member.name)
+                stats.files_unwritable += 1
                 continue
             if stats.files_extracted + 1 > MAX_SNAPSHOT_FILES:
                 raise SnapshotTooLarge(f"snapshot has over {MAX_SNAPSHOT_FILES} reviewable files")
@@ -86,9 +97,21 @@ def extract_snapshot(tar_path: Path, workspace: Path) -> SnapshotStats:
             source = archive.extractfile(member)
             if source is None:
                 continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with source, destination.open("wb") as out:
-                out.write(source.read())
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with source, destination.open("wb") as out:
+                    out.write(source.read())
+            except OSError as exc:
+                # A repository chooses its own file names. One the filesystem
+                # will not create (a forbidden character, an over-long
+                # component, a file colliding with a directory) is a permanent
+                # property of that repository, exactly like being too large,
+                # so it is skipped and counted rather than raised: raising
+                # sent it to the generic retry path, which burned all three
+                # attempts and then blamed a temporary problem.
+                log.warning("workspace_write_failed", path=member.name, error=type(exc).__name__)
+                stats.files_unwritable += 1
+                continue
             stats.files_extracted += 1
             stats.bytes_written += member.size
     return stats

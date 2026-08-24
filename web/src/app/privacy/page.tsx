@@ -244,8 +244,15 @@ export default function PrivacyPage() {
             deletion.
           </li>
           <li>
-            Encrypted GitHub token and AI key: kept until you remove them in
-            Settings or request deletion.
+            Encrypted AI key: kept until you remove it in Settings, which you
+            can do at any time, or until you request deletion.
+          </li>
+          <li>
+            Encrypted GitHub token: kept until you request deletion. Being
+            straight about the gap: there is no button for this yet, so it is
+            handled by hand through the contact form. You can also revoke
+            DiffLens from your GitHub account settings at any moment, which
+            makes the stored token useless immediately.
           </li>
           <li>Contact messages: kept until your request is handled.</li>
           <li>

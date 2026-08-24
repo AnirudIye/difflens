@@ -5,6 +5,7 @@ or honesty boundary: traversal and symlinks must never land on disk, and the
 ceilings must refuse rather than truncate.
 """
 
+import io
 import tarfile
 
 import pytest
@@ -161,3 +162,33 @@ def test_stats_count_what_actually_happened(tmp_path, workspace):
     assert stats.files_extracted == 2
     assert stats.files_skipped_large == 1
     assert stats.bytes_written == len(b"x = 1\n") + len(b"y = 22\n")
+
+
+def test_a_name_the_filesystem_refuses_is_skipped_not_raised(tmp_path):
+    """A repository chooses its own file names. One this filesystem will not
+    create is a permanent property of that repository, so it is skipped and
+    counted; raising sent it to the generic retry path, which burned all
+    three attempts and then blamed a temporary problem."""
+    import tarfile
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tar_path = tmp_path / "snap.tar.gz"
+    # A file and a directory that cannot both exist under the same name, which
+    # fails the same way on every platform
+    members = {
+        "octocat-repo-abc/collide": b"first\n",
+        "octocat-repo-abc/collide/inside.py": b"x = 1\n",
+        "octocat-repo-abc/fine.py": b"y = 2\n",
+    }
+    with tarfile.open(tar_path, "w:gz") as archive:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+
+    stats = extract_snapshot(tar_path, workspace)
+
+    assert (workspace / "fine.py").read_bytes() == b"y = 2\n"
+    assert stats.files_unwritable >= 1
+    assert stats.files_extracted >= 1
