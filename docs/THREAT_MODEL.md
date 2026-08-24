@@ -3,11 +3,14 @@
 Written Day 8 (2026-08-20). This is the model the code was actually built
 against, not an aspirational one. Where a control does not exist, it is in
 "Accepted gaps" with the reason, because a threat model whose every row says
-"mitigated" is a marketing document.
+"mitigated" is a marketing document. Extended 2026-08-24 when reviews of
+whole repository snapshots landed (ADR 0005); that surface has its own
+section below.
 
 DiffLens reads other people's source code and hands it to a language model.
 That single sentence produces most of what follows: everything inside a pull
-request is written by someone who is not the user and not us.
+request, and every file of a reviewed repository snapshot, is written by
+someone who is not the user and not us.
 
 ## What is worth stealing
 
@@ -38,7 +41,7 @@ request is written by someone who is not the user and not us.
        |
        +--> [GitHub API]   outbound, carrying one user's token
 
-   [pull request content] ------------ UNTRUSTED INPUT, crosses into
+   [PR / repository content] --------- UNTRUSTED INPUT, crosses into
                                        analyzers, the AI prompt, and the UI
 ```
 
@@ -70,17 +73,27 @@ recovery flow to attack.
 
 ### Tampering
 
-- A review is pinned to immutable base and head SHAs at creation. The worker
-  fetches by those SHAs and never by branch name, so a push mid-review cannot
-  change what was reviewed.
+- A pull request review is pinned to immutable base and head SHAs at
+  creation; a repository review pins the default branch's head SHA the same
+  way and has no base (`ck_reviews_pr_has_base` lets only repository reviews
+  omit one, and `ck_reviews_one_target` makes every review target exactly one
+  of a pull request or a repository). The worker fetches by those SHAs and
+  never by branch name, so a push mid-review cannot change what was reviewed.
 - Job state transitions are guarded UPDATEs that include the expected current
   state and the owning worker id (`api/worker/jobs.py`). Two workers racing
   produce one winner and one no-op, structurally rather than by convention.
-- One live review per (pull request, head SHA) and one live job per review are
-  partial unique indexes in Postgres, not application checks.
+- One live review per (pull request, head SHA), one live review per
+  (repository, head SHA), and one live job per review are partial unique
+  indexes in Postgres, not application checks. The repository index is not a
+  copy of the PR one for symmetry: Postgres treats NULLs as distinct in
+  unique indexes, so once `pull_request_id` is nullable the PR index fails
+  open for repository reviews, and `uq_reviews_repo_sha_live` is what
+  actually constrains them.
 - The workspace built from the GitHub contents API rejects paths that would
   escape it (`api/worker/runner.py`), so a file named `../../etc/passwd` in a
-  pull request writes nothing.
+  pull request writes nothing. The tarball a repository review extracts gets
+  the same check and several more; see "The repository snapshot tarball"
+  below.
 
 ### Repudiation
 
@@ -128,6 +141,20 @@ per-user data.
   cheap, while a review spends GitHub quota, worker time, and AI tokens.
 - The AI stage is skipped above a diff size cap rather than truncated, and it
   says so in the summary.
+- A repository review's AI stage is chunked under a per-chunk character
+  budget, and the number of chunks is capped by whose key pays: without the
+  user's own key it runs one chunk, so a repository review costs the shared
+  free key the same order of magnitude as one maximal pull request review.
+  Coverage is stated in the summary rather than implied.
+- A repository snapshot is refused above hard ceilings (100MB of compressed
+  tarball at download, 200,000 archive members, 20,000 extracted files, 200MB
+  written) rather than truncated; see the tarball section below.
+- `uq_reviews_repo_sha_live` extends the demo's structural floor to
+  repository reviews: one live review per (repository, commit), enforced by
+  Postgres however the rate limiter behaves. Repository reviews are
+  authenticated-only, so this sits under the per-user limit rather than
+  replacing it, and it is what turns "press the button in a loop" into 409s
+  instead of a queue of tarball downloads.
 - GitHub's undocumented 300-file compare cap fails the review honestly rather
   than reviewing a silently truncated diff.
 - Analyzers run under timeouts and are isolated from each other; one hung tool
@@ -212,6 +239,56 @@ every line of it as an attempt to give the model instructions.
   diff no longer touches would be discarded exactly like a hallucination.
   `tests/analysis/test_demo_sample.py` asserts the discard counters are zero,
   so that drift fails the build instead of quietly emptying the demo.
+
+## The repository snapshot tarball
+
+Added 2026-08-24 with repository snapshot reviews (ADR 0005). A repository
+review downloads the repository's tarball at the pinned SHA and extracts it
+on the worker. The archive is attacker-influenced input: a repository
+chooses its own file names, sizes, and member types, so extraction
+(`api/worker/snapshot.py`) treats it the way the prompt treats diff text.
+
+- Extraction streams member by member and never calls `extractall`. Only
+  regular files are written: symlinks are skipped, never resolved, so a link
+  pointing at `/etc` cannot be followed by an analyzer later.
+- Every destination path is resolved and checked against the workspace root;
+  an entry that would land outside it is dropped and logged
+  (`workspace_escape_dropped`), the same rule the PR workspace applies to
+  hostile filenames in a diff.
+- GitHub wraps everything in a single top-level directory; the prefix is
+  stripped, and a member not shaped that way is not something GitHub
+  produces and is dropped.
+- The ceilings refuse, never truncate: 100MB of compressed tarball at
+  download, 200,000 archive members scanned, 20,000 files extracted, 200MB
+  of bytes written. A member bomb (millions of zero-byte entries) costs
+  bounded CPU because the member ceiling counts entries that write nothing;
+  a byte bomb hits the written-bytes ceiling. Either way the review fails
+  with an honest error rather than reviewing half a repository, because a
+  half-extracted tree produces a confidently wrong "no findings" for the
+  missing half.
+- Files over 500KB are skipped, the same `MAX_FILE_BYTES` the validator
+  already enforces on the PR path. Vendored trees and `.git` are never
+  written at all.
+- The tarball is deleted before the analyzers run, so the compressed and
+  extracted copies never occupy the free tier's disk at the same time.
+
+Two properties of snapshot mode are worth stating because they differ from
+the pull request path:
+
+- **detect-secrets reports at full confidence.** On the PR path a secret in
+  a changed file but outside the changed lines is downgraded, because the PR
+  did not necessarily add it. In a snapshot every line counts as changed, so
+  the downgrade never fires and every current secret reports at the
+  detector's full confidence. That is correct for a snapshot: the question
+  is "is this credential in the tree now", not "did this change add it".
+- **A user's AI key is spent by the chunk, and transients degrade in-stage.**
+  A repository's AI review runs as up to 40 provider calls on a
+  bring-your-own key. A transient failure on one chunk retries once and then
+  degrades (counted, and reported in the summary), and three consecutive
+  failures stop the stage; only a config error (a bad key, a bad model id)
+  aborts. None of it reaches the job retry ladder, so a provider hiccup on
+  chunk 39 cannot re-bill chunks 1 through 38. The containment is
+  per-attempt, not absolute: gap 15 below.
 
 ## Supply chain
 
@@ -320,6 +397,21 @@ Deliberate, with reasons. This is the honest half.
     much as a scope one: the OAuth `repo` scope grants write access, and a
     review tool that can write to your code is the wrong posture. Private
     repository support means a GitHub App with granular permissions.
+15. **Chunk-level cost containment is per-attempt.** A repository review on a
+    user's own key spends up to 40 provider calls per attempt, and findings
+    persist only at the end. A worker that loses the job mid-stage
+    (spin-down, stale-heartbeat reclaim) re-runs every chunk on the next
+    attempt, up to `max_attempts` (3). Per-chunk resume would mean persisting
+    partial results mid-job, which the ownership model deliberately forbids:
+    a reclaimed worker's writes must never land.
+16. **Snapshot extraction statistics are computed and discarded.**
+    `extract_snapshot` counts the files it skipped for size, and the worker
+    ignores the return value, so nothing in the review says how much the
+    tarball dropped. The skipped files are those over `MAX_FILE_BYTES`, which
+    `is_reviewable` would reject even if they reached the workspace, so no
+    finding is lost; what is lost is the ability to say so. Files that reach
+    the workspace but exceed the AI chunk budget are counted into the
+    coverage note; files dropped at extraction are not.
 
 ## What would change this model
 

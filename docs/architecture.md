@@ -1,6 +1,6 @@
 # Architecture
 
-This document is the shape of the system. The four decisions that produced that
+This document is the shape of the system. The decisions that produced that
 shape, with the alternatives that lost and the costs accepted, are recorded
 separately as ADRs in [adr/](adr/):
 
@@ -8,6 +8,7 @@ separately as ADRs in [adr/](adr/):
 - [0002](adr/0002-github-oauth-empty-scope.md): GitHub OAuth with an empty scope
 - [0003](adr/0003-session-via-next-rewrite-proxy.md): The browser only ever talks to one origin
 - [0004](adr/0004-provider-abstraction-and-output-validation.md): Treat the AI provider and its output as untrusted
+- [0005](adr/0005-repository-snapshot-reviews.md): A repository snapshot is a review target, not a synthetic pull request
 
 ## Requirements
 
@@ -16,6 +17,8 @@ Functional:
 - Sign in with GitHub OAuth (read-only, public repos)
 - Show a complete review to a visitor with no account at all (the public demo)
 - List repositories and open PRs, pick one, run a review
+- Review a whole repository at its default branch head, no pull request
+  needed (post-sprint, ADR 0005)
 - Fetch the diff pinned to immutable base/head SHAs
 - Run deterministic analyzers and an AI reviewer asynchronously
 - Validate AI citations against the reviewed snapshot, dedupe, persist findings
@@ -62,6 +65,44 @@ Non-functional:
 9. Findings from all sources are fingerprinted on content, deduped, and persisted.
 10. The job transitions to `completed` (or `failed` with error detail, or `cancelled` if the user asked it to stop). The UI, polling review status, renders the findings.
 
+## What changes for a repository review
+
+A repository snapshot review (post-sprint, ADR 0005) is the same queue, the same job state
+machine, and the same pipeline with a few steps swapped:
+
+1. Creation pins the default branch's current head instead of a PR's pair of SHAs. There is no
+   base commit: `ck_reviews_one_target` makes every review target exactly one of a pull request
+   or a repository, and `ck_reviews_pr_has_base` lets only repository reviews omit a base. An
+   empty repository or a vanished default branch is refused as a 409, not a 500. A second partial
+   unique index, `uq_reviews_repo_sha_live`, permits one live review per (repository, commit);
+   it exists for correctness, not symmetry, because Postgres treats NULLs as distinct in unique
+   indexes and the PR index fails open once `pull_request_id` is nullable.
+2. Step 5 becomes one tarball instead of per-file contents calls: the worker streams the
+   repository archive at the pinned SHA (100MB download ceiling), then extracts it defensively:
+   regular files only, symlinks skipped, path-escape entries dropped, vendored trees and `.git`
+   never written, hard ceilings of 20,000 files / 200MB extracted / 200,000 members. Past a
+   ceiling the review refuses honestly rather than reviewing a truncated tree. The tarball is
+   deleted before analysis.
+3. There is no diff to parse. The pipeline builds a snapshot index instead: one entry per file
+   flagged all-changed, which the validation chain honors directly, so the analyzers and the
+   citation checks run unchanged without a repo-sized diff string in memory. The missing-tests
+   heuristic is dropped (with every line counted as changed it would flag every repository
+   without a test file), and analyzer timeouts are raised for repository scale.
+4. The AI stage runs in chunks: reviewable files are rendered with line numbers and packed
+   whole, in deterministic order, into chunks under a character budget. A user's own AI key runs
+   up to 40 chunks, paced 7 seconds apart; without one the review gets a single chunk, so repo
+   reviews cannot starve the shared free key. A failed chunk retries once, then degrades and is
+   counted; chunk failures never trigger job retries, so a transient on the last chunk cannot
+   re-bill a user's key for all the earlier ones.
+5. What actually ran is recorded in `pipeline_version` and surfaced in the summary:
+   `ai_coverage=covered/total` on every repository review, `ai_capped=keyless` when the keyless
+   cap bit, `ai_chunks_failed=N` when chunks degraded, `analyzers_skipped=...` when a tool could
+   not run, and `findings_truncated` (the 100-finding cap), which is now surfaced in the summary
+   for both targets.
+
+The only handle on a finished repository review is `latest_repo_review` on
+`GET /repositories/{id}`; there is still no reviews list.
+
 ## The public demo
 
 `/demo` shows a finished review to a visitor with no account, and lets them run it again. It is the same pipeline, not a recording of one: steps 2, 3, 4, 6, 8, 9, and 10 above are byte for byte the code a signed-in review runs.
@@ -83,14 +124,15 @@ Postgres on Neon. One line per table:
 - `repositories`: GitHub repos seen so far, deduped by GitHub id; `is_demo` marks the one the public demo reviews
 - `user_repositories`: which user can see which repo
 - `pull_requests`: PR metadata per repository
-- `reviews`: one review of one PR at one head SHA
+- `reviews`: one review of one target at one head SHA: a pull request (base and head) or a repository snapshot (head only); two CHECK constraints enforce exactly one target and let only repository reviews omit a base
 - `review_jobs`: the job state machine (queued, running, completed, failed, cancelled) plus heartbeats
 - `findings`: the product: severity, category, confidence, source, location, fingerprint, recommendation
 - `feedback`: per-user, per-finding verdicts
 
-Two partial unique indexes carry the concurrency model:
+Three partial unique indexes carry the concurrency model:
 
 - one live (non-terminal) review per (pull_request_id, head_sha): the same snapshot is never reviewed twice concurrently
+- one live review per (repository_id, head_sha), the repository-review sibling. It is correctness, not symmetry: Postgres treats NULLs as distinct in unique indexes, so the PR index fails open for reviews whose pull_request_id is NULL
 - one live job per review: a review can be retried, never doubled
 
 ## Queue design and trade-offs
