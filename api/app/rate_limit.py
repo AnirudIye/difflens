@@ -43,6 +43,11 @@ class Limit:
     name: str
     max_requests: int
     window_s: int
+    # What one counted request is, as the user hears it in the 429 sentence:
+    # "start a review" for the endpoints that spend money, "send a message"
+    # for the contact form. Defaults keep every existing call site verbatim.
+    verb: str = "start"
+    noun: str = "review"
 
 
 def _window_key(limit: Limit, identity: str, now: float) -> str:
@@ -69,8 +74,8 @@ def describe_window(seconds: int) -> str:
 def describe_limit(limit: Limit) -> str:
     """The whole sentence. This message is shown to the user verbatim by the
     frontend, so it has to read like English rather than like a counter."""
-    reviews = "1 review" if limit.max_requests == 1 else f"{limit.max_requests} reviews"
-    return f"You can start {reviews} every {describe_window(limit.window_s)}"
+    things = f"1 {limit.noun}" if limit.max_requests == 1 else f"{limit.max_requests} {limit.noun}s"
+    return f"You can {limit.verb} {things} every {describe_window(limit.window_s)}"
 
 
 def too_many(limit: Limit, retry_after_s: int) -> HTTPException:
@@ -189,3 +194,23 @@ def enforce_demo_rate_limit(request: Request) -> None:
 
 
 DemoRateLimit = Annotated[None, Depends(enforce_demo_rate_limit)]
+
+
+def contact_limit() -> Limit:
+    return Limit(
+        name="contact",
+        max_requests=settings.contact_rate_limit,
+        window_s=settings.contact_rate_limit_window_s,
+        verb="send",
+        noun="message",
+    )
+
+
+def enforce_contact_rate_limit(request: Request) -> None:
+    """Dependency for the contact form, which anyone can submit without a
+    session. Same spoofable-by-design identity as the demo limit: the cost of
+    a burst here is bounded rows in Postgres, not money."""
+    check(queue.get_redis(), contact_limit(), f"ip:{client_ip(request)}")
+
+
+ContactRateLimit = Annotated[None, Depends(enforce_contact_rate_limit)]
