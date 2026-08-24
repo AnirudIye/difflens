@@ -277,13 +277,17 @@ def test_rerun_allowed_after_failure(client, db, synced_pr, github, doorbell):
     assert len(doorbell) == 2
 
 
-def test_conflict_with_foreign_review_hides_its_id(
+def test_a_collaborators_review_does_not_block_yours(
     client, db, github, synced_pr, make_user_with_session
 ):
-    # Bob legitimately shares the repo, but Alice's review id is not his to see
+    """Bob shares the repository with Alice. He used to get a 409 with the id
+    withheld, which was correct about the id and wrong about the conflict: a
+    completed review counts as live and only its owner can supersede it, so
+    Bob was blocked for good and told to try again."""
     _alice, pr = synced_pr
     first = client.post("/reviews", json={"pull_request_id": str(pr.id)})
     assert first.status_code == 201
+    alice_review_id = first.json()["id"]
 
     bob, _ = make_user_with_session("bob")
     repo = db.get(Repository, pr.repository_id)
@@ -291,10 +295,10 @@ def test_conflict_with_foreign_review_hides_its_id(
     db.flush()
 
     response = client.post("/reviews", json={"pull_request_id": str(pr.id)})
-    assert response.status_code == 409
-    error = response.json()["error"]
-    assert error["code"] == "review_already_exists"
-    assert "review_id" not in error
+    assert response.status_code == 201
+    assert response.json()["id"] != alice_review_id
+    # And Alice's review is still not his to read
+    assert client.get(f"/reviews/{alice_review_id}").status_code == 404
 
 
 def test_foreign_pr_indistinguishable_from_missing(

@@ -278,17 +278,22 @@ def test_second_live_repo_review_at_same_commit_conflicts(db, repo_target):
     assert len(db.execute(select(ReviewJob.id)).all()) == 1
 
 
-def test_repo_conflict_withholds_foreign_review_id(db, repo_target):
+def test_another_users_review_does_not_block_this_one(db, repo_target):
+    """This used to raise ReviewAlreadyExists with the id withheld, because
+    the winner belonged to someone else. Withholding the id was right; the
+    conflict was not. A completed review counts as live and only its owner
+    can supersede it, so the second user was blocked for good, told to try
+    again, and pointed at findings they are not allowed to read."""
     user, repository = repo_target
-    review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+    mine, _ = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
     other = User(github_id=772003, login="second-snapper")
     db.add(other)
     db.flush()
 
-    with pytest.raises(review_service.ReviewAlreadyExists) as excinfo:
-        review_service.insert_repo_review(db, other, repository, REPO_HEAD)
+    theirs, _ = review_service.insert_repo_review(db, other, repository, REPO_HEAD)
 
-    assert excinfo.value.review_id is None
+    assert theirs.id != mine.id
+    assert theirs.user_id == other.id
 
 
 def test_pr_and_repo_reviews_do_not_cross_conflict(db, repo_target):
@@ -395,3 +400,39 @@ def test_create_repo_review_refreshes_a_changed_default_branch(db, github, repo_
     assert any(
         request.url.path == "/repos/octocat/alpha/branches/trunk" for request in github.calls
     )
+
+
+def test_two_users_can_review_the_same_repository_at_the_same_commit(db):
+    """A completed review counts as live and only its owner can supersede it,
+    so a shared live index let one account block every other account from
+    reviewing a public repository, permanently, with a 409 carrying no id and
+    pointing at findings they are not allowed to read."""
+    alice = User(github_id=773001, login="alice-shared")
+    bob = User(github_id=773002, login="bob-shared")
+    repo = Repository(github_id=773003, full_name="octocat/shared", default_branch="main")
+    db.add_all([alice, bob, repo])
+    db.flush()
+    sha = "f" * 40
+
+    first, _ = review_service.insert_repo_review(db, alice, repo, sha)
+    second, _ = review_service.insert_repo_review(db, bob, repo, sha)
+
+    assert first.id != second.id
+    assert first.user_id == alice.id
+    assert second.user_id == bob.id
+
+
+def test_one_user_still_cannot_double_start_the_same_repository_snapshot(db):
+    """Scoping per user must not weaken the guard that makes a double click
+    idempotent, or the anonymous ceiling the demo leans on."""
+    alice = User(github_id=773011, login="alice-double")
+    repo = Repository(github_id=773012, full_name="octocat/double", default_branch="main")
+    db.add_all([alice, repo])
+    db.flush()
+    sha = "e" * 40
+
+    review, _ = review_service.insert_repo_review(db, alice, repo, sha)
+    with pytest.raises(review_service.ReviewAlreadyExists) as raised:
+        review_service.insert_repo_review(db, alice, repo, sha)
+
+    assert raised.value.review_id == review.id

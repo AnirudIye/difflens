@@ -210,18 +210,25 @@ class Review(Base):
         Index("ix_reviews_user_id_created_at", "user_id", text("created_at DESC")),
         Index("ix_reviews_pull_request_id_created_at", "pull_request_id", text("created_at DESC")),
         Index("ix_reviews_repository_id_created_at", "repository_id", text("created_at DESC")),
-        # One live review per (PR, commit): reruns are allowed only after failure/cancellation
+        # One live review per user per (PR, commit): reruns are allowed only
+        # after failure/cancellation. Scoped to the user because a completed
+        # review counts as live and only its owner can supersede it, so a
+        # shared key would let one account block every other account from
+        # reviewing a public repository, permanently and with no way out.
         Index(
             LIVE_REVIEW_INDEX,
+            "user_id",
             "pull_request_id",
             "head_sha",
             unique=True,
             postgresql_where=text("status IN ('queued', 'running', 'completed')"),
         ),
-        # One live review per (repository, commit), the repo-snapshot sibling
-        # of the index above and the structural cap on concurrent repo jobs
+        # The repo-snapshot sibling of the index above, and still the
+        # structural cap on concurrent repo jobs: every demo review belongs
+        # to the one demo user, so one live demo job remains the ceiling.
         Index(
             LIVE_REPO_REVIEW_INDEX,
+            "user_id",
             "repository_id",
             "head_sha",
             unique=True,

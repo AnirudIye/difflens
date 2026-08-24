@@ -158,6 +158,10 @@ def _insert_queued(
         existing = db.execute(
             select(Review).where(
                 *winner_where,
+                # The index is scoped to the user, so the review that won is
+                # this user's own; looking it up any other way could hand back
+                # someone else's id
+                Review.user_id == user.id,
                 Review.head_sha == review.head_sha,
                 Review.status.in_(LIVE_REVIEW_STATUSES),
             )
