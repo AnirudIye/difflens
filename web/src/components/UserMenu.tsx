@@ -63,7 +63,6 @@ export default function UserMenu({
         className="menu-trigger"
         ref={trigger}
         type="button"
-        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((was) => !was)}
       >
@@ -90,11 +89,10 @@ export default function UserMenu({
       </button>
 
       {open ? (
-        <div className="menu-list" role="menu">
+        <div className="menu-list">
           <Link
             className="menu-item"
             href="/repositories"
-            role="menuitem"
             onClick={() => setOpen(false)}
           >
             Repositories
@@ -102,7 +100,6 @@ export default function UserMenu({
           <Link
             className="menu-item"
             href="/settings"
-            role="menuitem"
             onClick={() => setOpen(false)}
           >
             Settings
@@ -110,7 +107,6 @@ export default function UserMenu({
           <button
             className="menu-item menu-item-danger"
             type="button"
-            role="menuitem"
             onClick={() => {
               setOpen(false);
               onSignOut?.();

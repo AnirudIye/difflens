@@ -18,6 +18,27 @@ log = structlog.get_logger()
 # it is context, not part of the field name the caller recognises.
 _LOCATIONS = frozenset({"body", "query", "path", "header", "cookie"})
 
+# The largest body any endpoint here has a use for. The biggest legitimate
+# payload is a contact message (5,000 characters) or an AI key (512), so this
+# is generous by two orders of magnitude and still refuses the case that
+# matters: an anonymous caller streaming hundreds of megabytes into a 512MB
+# instance, which is buffered and parsed in full before the route that would
+# have rejected it ever runs.
+MAX_BODY_BYTES = 256 * 1024
+
+# A client-supplied correlation id is echoed into responses and logs, so it
+# is bounded and stripped of anything that is not plainly safe to print.
+_REQUEST_ID_MAX = 64
+_REQUEST_ID_SAFE = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+
+
+def _clean_request_id(raw: str | None) -> str:
+    if not raw:
+        return uuid.uuid4().hex
+    cleaned = "".join(char for char in raw[:_REQUEST_ID_MAX] if char in _REQUEST_ID_SAFE)
+    return cleaned or uuid.uuid4().hex
+
+
 # Long enough to name several bad fields, short enough that a hostile body
 # full of unknown keys cannot turn one 422 into a payload
 MAX_VALIDATION_MESSAGE_CHARS = 300
@@ -56,8 +77,33 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
+    async def body_size_limit(request: Request, call_next):
+        """Refuse an oversized body before it is read.
+
+        Everything downstream (the JSON parse, the dependency that would have
+        answered 401, the rate limiter that would have answered 429) runs only
+        after the whole body is in memory, so without this an unauthenticated
+        caller can spend the instance's memory on a request that was never
+        going to succeed.
+        """
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": {
+                        "code": "payload_too_large",
+                        "message": "That request body is too large.",
+                        "request_id": _clean_request_id(request.headers.get("X-Request-ID")),
+                    }
+                },
+                headers={"X-Content-Type-Options": "nosniff"},
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
     async def request_context(request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        request_id = _clean_request_id(request.headers.get("X-Request-ID"))
         request.state.request_id = request_id
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)

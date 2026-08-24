@@ -143,3 +143,26 @@ def test_an_unexpected_exception_still_answers_in_the_envelope(
     assert body["error"]["request_id"]
     # The exception text can carry anything the request contained
     assert "something nobody predicted" not in response.text
+
+
+def test_an_oversized_body_is_refused_before_it_is_parsed(client):
+    """Everything downstream runs only after the whole body is buffered, so
+    an anonymous caller could spend the instance's memory on a request that
+    was never going to succeed."""
+    from app.main import MAX_BODY_BYTES
+
+    response = client.post("/contact", json={"message": "x" * (MAX_BODY_BYTES + 1024)})
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+
+
+def test_a_hostile_request_id_is_not_reflected_verbatim(client):
+    """The id is echoed into the response header, the error envelope, and
+    every log line for the request, so it is bounded and restricted to
+    characters that are plainly safe to print."""
+    response = client.get("/health", headers={"X-Request-ID": "<script>" + "A" * 500})
+
+    echoed = response.headers["x-request-id"]
+    assert len(echoed) <= 64
+    assert "<" not in echoed and ">" not in echoed

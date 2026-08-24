@@ -278,9 +278,13 @@ export default function ReviewPage() {
       <Header me={me} onSignOut={signOut} />
       <main className="dash">
         {state.kind === "loading" ? (
-          <p className="muted">Loading the review...</p>
+          <p className="muted" role="status" aria-live="polite">
+            Loading the review...
+          </p>
         ) : state.kind === "waking" ? (
-          <div className="status-line">
+          // Announced, because the whole point of this state is that nothing
+          // visible happens for up to a minute
+          <div className="status-line" role="status" aria-live="polite">
             <span className="status-dot status-live" aria-hidden="true" />
             <div>
               <p>Waking the review server</p>

@@ -237,7 +237,12 @@ export default function PrivacyPage() {
             Findings and summaries: kept so you can revisit your reviews,
             until you ask for deletion.
           </li>
-          <li>Sessions: expire after 7 days, or when you sign out.</li>
+          <li>
+            Sessions: stop working after 7 days. Signing out deletes the
+            session row immediately; a session simply left to expire stops
+            being usable at 7 days and its row is removed when you ask for
+            deletion.
+          </li>
           <li>
             Encrypted GitHub token and AI key: kept until you remove them in
             Settings or request deletion.
@@ -283,7 +288,7 @@ export default function PrivacyPage() {
 
         <h2>11. Security</h2>
         <ul>
-          <li>All traffic uses TLS.</li>
+          <li>All traffic to the hosted service uses HTTPS.</li>
           <li>
             GitHub tokens and AI keys are encrypted at rest, not merely
             hashed or hidden.
@@ -296,8 +301,13 @@ export default function PrivacyPage() {
           <li>There is no payment data anywhere in the system.</li>
         </ul>
         <p>
-          If a breach affects your personal information, you will be notified
-          without undue delay.
+          If a breach affects your personal information, a notice will be
+          posted on this page and on the project&apos;s GitHub repository
+          without undue delay, and regulators will be notified where the law
+          requires it. Being direct about the limit: DiffLens holds no email
+          address for you, so it cannot contact you individually. If you want
+          to be told directly, leave an address through the contact form and
+          it will be used for that and nothing else.
         </p>
 
         <h2>12. Changes to this policy</h2>
