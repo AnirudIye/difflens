@@ -11,7 +11,7 @@ holds only what the sender chose to type. Rate limiting is per-IP but lives
 in Redis, where it expires with the window.
 
 Revision ID: 0007
-Revises: 0005
+Revises: 0006
 
 """
 
@@ -20,8 +20,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0007"
-# down_revision re-pointed to 0006 at merge time
-down_revision = "0005"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 
