@@ -236,6 +236,8 @@ export default function ReviewPage() {
         }
         if (err.code === "pull_request_closed") {
           setNote("That pull request has closed on GitHub, so it cannot be reviewed again.");
+        } else if (err.code === "repository_empty") {
+          setNote(err.message);
         } else if (err.code === "review_still_running") {
           setNote("This review is still going. Wait for it to finish first.");
         } else if (err.code === "rate_limited") {
@@ -350,10 +352,19 @@ export default function ReviewPage() {
       />
       <ConfirmDialog
         open={confirming === "rerun"}
-        title="Review this commit again?"
+        title={
+          state.kind === "ready" && state.review.repository
+            ? "Review this repository again?"
+            : "Review this commit again?"
+        }
         body={
-          "This review is replaced by a new one. Its findings stay readable, " +
-          "but it stops being the current review for this pull request."
+          state.kind === "ready" && state.review.repository
+            ? "DiffLens reviews the current latest commit of " +
+              `${state.review.repository.default_branch ?? "the default branch"}. ` +
+              "If new commits have landed since, the new review covers them. " +
+              "This review stays readable but stops being the current one."
+            : "This review is replaced by a new one. Its findings stay readable, " +
+              "but it stops being the current review for this pull request."
         }
         confirmLabel="Run again"
         busy={rerunBusy}
@@ -392,32 +403,49 @@ function ReviewBody({
   onFeedback: (finding: Finding, verdict: FeedbackVerdict) => void;
 }) {
   const pull = review.pull_request;
+  const repo = review.repository;
   const active = isActive(review.status);
   const cancelling = review.cancel_requested || cancelSent;
   const groups = groupByFile(review.findings);
   const counts = severitySummary(review);
+  const repoPageHref = pull
+    ? `/repositories/${pull.repository_id}`
+    : `/repositories/${review.repository_id}`;
 
   return (
     <>
-      <Link className="back-link" href={`/repositories/${pull.repository_id}`}>
-        &lsaquo; {pull.repository_full_name}
+      <Link className="back-link" href={repoPageHref}>
+        &lsaquo; {pull ? pull.repository_full_name : repo?.full_name}
       </Link>
       <div className="page-head">
         <h1 className="page-title">
           Review of{" "}
-          {pull.html_url ? (
+          {pull ? (
+            pull.html_url ? (
+              <a
+                className="pr-title"
+                href={pull.html_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span className="mono">#{pull.number}</span> {pull.title}
+              </a>
+            ) : (
+              <>
+                <span className="mono">#{pull.number}</span> {pull.title}
+              </>
+            )
+          ) : repo?.html_url ? (
             <a
               className="pr-title"
-              href={pull.html_url}
+              href={`${repo.html_url}/tree/${review.head_sha}`}
               target="_blank"
               rel="noopener noreferrer"
             >
-              <span className="mono">#{pull.number}</span> {pull.title}
+              {repo.full_name}
             </a>
           ) : (
-            <>
-              <span className="mono">#{pull.number}</span> {pull.title}
-            </>
+            repo?.full_name
           )}
         </h1>
         {active ? (
@@ -435,7 +463,11 @@ function ReviewBody({
             type="button"
             disabled={rerunBusy}
             onClick={onRerun}
-            title="Review this commit again, for instance after changing your AI key"
+            title={
+              pull
+                ? "Review this commit again, for instance after changing your AI key"
+                : "Review the default branch's current head commit again"
+            }
           >
             {rerunBusy ? "Starting..." : "Run again"}
           </button>
@@ -443,8 +475,17 @@ function ReviewBody({
       </div>
       <p className="review-meta">
         <span className="mono">{review.head_sha.slice(0, 7)}</span>
-        {" against "}
-        <span className="mono">{review.base_sha.slice(0, 7)}</span>
+        {pull && review.base_sha ? (
+          <>
+            {" against "}
+            <span className="mono">{review.base_sha.slice(0, 7)}</span>
+          </>
+        ) : repo?.default_branch ? (
+          <>
+            {" on "}
+            <span className="mono">{repo.default_branch}</span>
+          </>
+        ) : null}
         {" - started "}
         {relativeTime(review.created_at)}
         {review.completed_at
@@ -472,7 +513,11 @@ function ReviewBody({
           </span>
         ) : null}
         {review.status === "running" && !stalled ? (
-          <span className="muted">checking the diff line by line</span>
+          <span className="muted">
+            {pull
+              ? "checking the diff line by line"
+              : "checking the repository file by file"}
+          </span>
         ) : null}
       </div>
 
@@ -500,23 +545,23 @@ function ReviewBody({
             {review.error_user_message ??
               "This review failed before it could finish."}
           </p>
-          <Link className="button" href={`/repositories/${pull.repository_id}`}>
-            Back to pull requests
+          <Link className="button" href={repoPageHref}>
+            {pull ? "Back to pull requests" : "Back to repository"}
           </Link>
         </div>
       ) : null}
 
       {review.status === "cancelled" ? (
         <p className="muted">
-          This review was cancelled before it finished. Run it again from the
-          pull request list whenever you like.
+          This review was cancelled before it finished. Run it again from the{" "}
+          {pull ? "pull request list" : "repository page"} whenever you like.
         </p>
       ) : null}
 
       {review.status === "superseded" ? (
         <p className="muted">
-          A newer review of this pull request has replaced this one. Its
-          findings are kept below as they were.
+          A newer review of this {pull ? "pull request" : "repository"} has
+          replaced this one. Its findings are kept below as they were.
         </p>
       ) : null}
 
@@ -535,6 +580,20 @@ function ReviewBody({
                 smaller pull request gets the full review.
               </p>
             </div>
+          ) : review.ai_capped === "keyless" && review.ai_coverage ? (
+            <div className="notice ai-notice" role="status">
+              <p>
+                The AI reviewer read {review.ai_coverage.files_covered} of{" "}
+                {review.ai_coverage.files_total} reviewable files. Without your
+                own AI key, DiffLens runs on a shared free AI tier and caps how
+                much of a repository the AI reads. The deterministic analyzers
+                checked every reviewable file. Add your own AI key in Settings
+                to get full AI coverage.
+              </p>
+              <Link className="button button-quiet" href="/settings">
+                Add your API key
+              </Link>
+            </div>
           ) : !hasRealAI(review) ? (
             <div className="notice ai-notice" role="status">
               <p>
@@ -545,6 +604,39 @@ function ReviewBody({
               <Link className="button button-quiet" href="/settings">
                 Add your API key
               </Link>
+            </div>
+          ) : review.ai_coverage &&
+            review.ai_coverage.files_covered <
+              review.ai_coverage.files_total ? (
+            // A key would not help here either: the repository is bigger than
+            // one review's batch ceiling, whoever pays for the calls
+            <div className="notice ai-notice" role="status">
+              <p>
+                The AI reviewer read {review.ai_coverage.files_covered} of{" "}
+                {review.ai_coverage.files_total} reviewable files; this
+                repository is larger than one review can cover. The
+                deterministic analyzers checked every reviewable file.
+              </p>
+            </div>
+          ) : null}
+          {review.findings_truncated ? (
+            <div className="notice ai-notice" role="status">
+              <p>
+                This review found more than 100 findings. Only the 100 most
+                severe are shown; fix some and run the review again to see the
+                rest.
+              </p>
+            </div>
+          ) : null}
+          {review.analyzers_skipped && review.analyzers_skipped.length > 0 ? (
+            <div className="notice ai-notice" role="status">
+              <p>
+                Some analyzers did not finish:{" "}
+                <span className="mono">
+                  {review.analyzers_skipped.join(", ")}
+                </span>
+                . Their findings are missing from this review.
+              </p>
             </div>
           ) : null}
           {counts.length > 0 ? (
@@ -573,7 +665,11 @@ function ReviewBody({
                   strokeLinejoin="round"
                 />
               </svg>
-              <p>No findings. This diff came back clean.</p>
+              <p>
+                {pull
+                  ? "No findings. This diff came back clean."
+                  : "No findings. This repository came back clean at this commit."}
+              </p>
             </div>
           ) : (
             groups.map(([filePath, findings]) => (

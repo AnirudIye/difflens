@@ -15,6 +15,19 @@ export type Repository = {
   last_synced_at: string | null;
 };
 
+export type LatestRepoReview = {
+  id: string;
+  status: ReviewStatus;
+  head_sha: string;
+  created_at: string;
+};
+
+// GET /repositories/{id}: the repo plus the caller's latest snapshot review,
+// which is the only handle on a finished repo review
+export type RepositoryDetail = Repository & {
+  latest_repo_review: LatestRepoReview | null;
+};
+
 export type PullRequest = {
   id: string;
   number: number;
@@ -65,10 +78,21 @@ export type ReviewPullRequest = {
   repository_full_name: string;
 };
 
+export type ReviewRepository = {
+  id: string;
+  full_name: string;
+  default_branch: string | null;
+  html_url: string | null;
+};
+
 export type Review = {
   id: string;
-  pull_request_id: string;
-  pull_request: ReviewPullRequest;
+  // Exactly one of pull_request and repository is non-null, matching target
+  target: "pull_request" | "repository";
+  pull_request_id: string | null;
+  pull_request: ReviewPullRequest | null;
+  repository_id: string | null;
+  repository: ReviewRepository | null;
   // null means no AI ran; "mock" means the offline stub did; "demo" means
   // the public demo replayed its recorded response. None of the three is a
   // clean AI pass, and the page has to say which it was.
@@ -77,9 +101,16 @@ export type Review = {
   // only "diff_too_large"). Null covers both a real AI pass and no AI at
   // all, which ai_model tells apart.
   ai_skipped: string | null;
+  // Repository snapshots: how many reviewable files the AI actually read
+  ai_coverage: { files_covered: number; files_total: number } | null;
+  // "keyless" when the keyless tier's chunk cap cut AI coverage
+  ai_capped: "keyless" | null;
+  // The findings list was cut at the 100-finding cap
+  findings_truncated: boolean;
+  analyzers_skipped: string[] | null;
   status: ReviewStatus;
   head_sha: string;
-  base_sha: string;
+  base_sha: string | null;
   summary: string | null;
   findings_count: number | null;
   severity_counts: Partial<Record<Severity, number>> | null;

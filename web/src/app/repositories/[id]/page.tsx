@@ -6,13 +6,13 @@ import { useParams, useRouter } from "next/navigation";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
 import { relativeTime } from "@/lib/time";
-import type { PullRequest, Review } from "@/lib/types";
+import type { PullRequest, RepositoryDetail, Review } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
 import { useSignOut } from "@/lib/useSignOut";
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "ready"; pulls: PullRequest[] }
+  | { kind: "ready"; repo: RepositoryDetail; pulls: PullRequest[] }
   | { kind: "reconnect" }
   | { kind: "error"; message: string };
 
@@ -23,15 +23,19 @@ export default function RepositoryPullsPage() {
   const signOut = useSignOut();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [startingId, setStartingId] = useState<string | null>(null);
+  const [repoStarting, setRepoStarting] = useState(false);
   const [runNote, setRunNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
     try {
-      const data = await apiFetch<{ items: PullRequest[] }>(
-        `/repositories/${params.id}/pull-requests`,
-      );
-      setState({ kind: "ready", pulls: data.items });
+      const [repo, data] = await Promise.all([
+        apiFetch<RepositoryDetail>(`/repositories/${params.id}`),
+        apiFetch<{ items: PullRequest[] }>(
+          `/repositories/${params.id}/pull-requests`,
+        ),
+      ]);
+      setState({ kind: "ready", repo, pulls: data.items });
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "github_reconnect_required") {
@@ -123,6 +127,56 @@ export default function RepositoryPullsPage() {
     setStartingId(null);
   }
 
+  async function runRepoReview() {
+    setRepoStarting(true);
+    setRunNote(null);
+    try {
+      const review = await apiFetch<Review>("/reviews", {
+        method: "POST",
+        body: JSON.stringify({ repository_id: params.id }),
+      });
+      router.push(`/reviews/${review.id}`);
+      return;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        // Reconnect arrives as a 401 too, so the code check must come first
+        if (err.code === "github_reconnect_required") {
+          setState({ kind: "reconnect" });
+        } else if (err.status === 401) {
+          router.push("/login");
+          return;
+        } else if (err.code === "review_already_exists") {
+          const existingId = err.details.review_id;
+          if (typeof existingId === "string") {
+            router.push(`/reviews/${existingId}`);
+            return;
+          }
+          setRunNote(
+            "A review by another user already covers this repository at this commit.",
+          );
+        } else if (err.code === "repository_empty") {
+          setRunNote(err.message);
+        } else if (err.status === 404) {
+          setRunNote("This repository is not available anymore.");
+        } else if (
+          err.code === "github_rate_limited" ||
+          err.code === "github_unavailable"
+        ) {
+          setRunNote(
+            "GitHub is not answering right now. Give it a minute and try again.",
+          );
+        } else if (err.code === "rate_limited") {
+          setRunNote(err.message);
+        } else {
+          setRunNote("Starting the review failed. Try again.");
+        }
+      } else {
+        setRunNote("Starting the review failed. Try again.");
+      }
+    }
+    setRepoStarting(false);
+  }
+
   return (
     <div className="shell">
       <Header me={me} onSignOut={signOut} />
@@ -131,8 +185,41 @@ export default function RepositoryPullsPage() {
           &lsaquo; All repositories
         </Link>
         <div className="page-head">
-          <h1 className="page-title">Pull requests</h1>
+          <h1 className="page-title">
+            {state.kind === "ready" ? state.repo.full_name : "Repository"}
+          </h1>
+          {state.kind === "ready" ? (
+            <button
+              className="button row-end"
+              type="button"
+              disabled={repoStarting || startingId !== null}
+              onClick={() => void runRepoReview()}
+            >
+              {repoStarting ? "Starting..." : "Review repository"}
+            </button>
+          ) : null}
         </div>
+        {state.kind === "ready" ? (
+          <p className="muted">
+            Reviews a snapshot of{" "}
+            <span className="mono">{state.repo.default_branch}</span> at its
+            latest commit. Deterministic checks cover every reviewable file.
+          </p>
+        ) : null}
+        {state.kind === "ready" && state.repo.latest_repo_review ? (
+          <p className="time-muted">
+            Latest repository review:{" "}
+            <Link
+              className="pr-title"
+              href={`/reviews/${state.repo.latest_repo_review.id}`}
+            >
+              {state.repo.latest_repo_review.status} at{" "}
+              <span className="mono">
+                {state.repo.latest_repo_review.head_sha.slice(0, 7)}
+              </span>
+            </Link>
+          </p>
+        ) : null}
 
         {runNote ? (
           <p className="muted run-note" role="alert">
@@ -155,9 +242,14 @@ export default function RepositoryPullsPage() {
         ) : state.kind === "error" ? (
           <p className="muted">{state.message}</p>
         ) : state.pulls.length === 0 ? (
-          <p className="muted">No open pull requests.</p>
+          <>
+            <h2 className="file-head">Pull requests</h2>
+            <p className="muted">No open pull requests.</p>
+          </>
         ) : (
-          <ul className="row-list">
+          <>
+            <h2 className="file-head">Pull requests</h2>
+            <ul className="row-list">
             {state.pulls.map((pr) => (
               <li className="row" key={pr.id}>
                 <div className="pr-main">
@@ -184,14 +276,15 @@ export default function RepositoryPullsPage() {
                 <button
                   className="button button-quiet row-end"
                   type="button"
-                  disabled={startingId !== null}
+                  disabled={startingId !== null || repoStarting}
                   onClick={() => void runReview(pr)}
                 >
                   {startingId === pr.id ? "Starting..." : "Run review"}
                 </button>
               </li>
             ))}
-          </ul>
+            </ul>
+          </>
         )}
       </main>
     </div>

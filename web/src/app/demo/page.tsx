@@ -217,6 +217,12 @@ function DemoReview({
   const groups = groupByFile(review.findings);
   const counts = severitySummary(review);
 
+  if (!pull) {
+    // The demo is a real pull request under the hood; a payload without one
+    // is a server bug, and rendering nothing beats crashing the page
+    return null;
+  }
+
   return (
     <>
       <div className="page-head demo-review-head">
