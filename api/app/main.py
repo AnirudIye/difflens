@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.logging_setup import setup_logging
-from app.routers import ai_settings, auth, demo, findings, health, repositories, reviews
+from app.routers import ai_settings, auth, contact, demo, findings, health, repositories, reviews
 
 log = structlog.get_logger()
 
@@ -131,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(reviews.router)
     app.include_router(ai_settings.router)
     app.include_router(findings.router)
+    app.include_router(contact.router)
     # Registered unconditionally so the route table does not change with
     # configuration: the authz sweep enumerates it, and a route that only
     # exists in production is a route nothing tests. DEMO_MODE is enforced

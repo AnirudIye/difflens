@@ -32,6 +32,10 @@ PUBLIC: dict[tuple[str, str], str] = {
     # a check, take no id, and answer 404 entirely when DEMO_MODE is off.
     ("GET", "/demo/review"): "the public demo, readable without an account",
     ("POST", "/demo/review/rerun"): "the public demo's rerun, IP rate limited",
+    # Anonymous senders are the point: the legal pages promise privacy
+    # rights requests through this form, and a deletion request may come
+    # from someone who cannot sign in. IP rate limited, honeypot filtered.
+    ("POST", "/contact"): "the contact form, writable without an account",
 }
 
 # (method, path template, JSON body) - everything that must answer 401 with no

@@ -57,3 +57,10 @@ services:
       # Unset behaves as off: config.py defaults DEMO_MODE to false.
       - key: DEMO_MODE # 1 enables /demo and seeds its rows at boot
         sync: false
+      # The contact form. Optional pair: with either unset, /contact
+      # submissions still land in Postgres (readable in the Neon console) and
+      # nothing is lost; setting both forwards each message on by email.
+      - key: RESEND_API_KEY # resend.com API key
+        sync: false
+      - key: CONTACT_FORWARD_TO # the address contact messages are forwarded to
+        sync: false

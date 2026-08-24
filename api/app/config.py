@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     demo_rate_limit: int = 5
     demo_rate_limit_window_s: int = 3600
 
+    # The public contact form. Messages always land in Postgres; forwarding
+    # by email happens only when both Resend values are set, and a failure to
+    # forward never fails the request. Rate limit is per-IP; 0 disables it.
+    contact_rate_limit: int = 5
+    contact_rate_limit_window_s: int = 3600
+    resend_api_key: str = ""
+    contact_forward_to: str = ""
+
     github_client_id: str = ""
     github_client_secret: str = ""
     session_secret: str = "dev-session-secret-change-me"

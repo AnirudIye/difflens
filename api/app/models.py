@@ -332,6 +332,26 @@ class Finding(Base):
     created_at: Mapped[datetime] = created_now()
 
 
+class ContactMessage(Base):
+    """One /contact submission. Postgres is the source of truth; forwarding
+    by email is best effort and `forwarded` records whether it happened.
+
+    No sender IP is stored, deliberately: anyone may write here without an
+    account, including someone exercising a privacy right, so the row holds
+    only what they chose to type.
+    """
+
+    __tablename__ = "contact_messages"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str | None]
+    email: Mapped[str | None]
+    subject: Mapped[str | None]
+    message: Mapped[str]
+    created_at: Mapped[datetime] = created_now()
+    forwarded: Mapped[bool] = mapped_column(server_default=text("false"))
+
+
 class Feedback(Base):
     __tablename__ = "feedback"
     __table_args__ = (
