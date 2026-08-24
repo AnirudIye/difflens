@@ -12,8 +12,11 @@ from sqlalchemy import select, update
 
 from app.models import PullRequest, Repository, Review, ReviewJob, User
 from app.services import review_service
+from app.services.github_client import GitHubClient
 
 BASE_SHA = "b" * 40
+REPO_HEAD = "d1ce" * 10
+MOVED_REPO_HEAD = "f00d" * 10
 
 
 @pytest.fixture
@@ -33,6 +36,20 @@ def pull(db):
     db.add(pull_request)
     db.flush()
     return user, pull_request
+
+
+@pytest.fixture
+def repo_target(db):
+    """One user with one linked repository, built without touching GitHub.
+
+    full_name matches conftest's FakeGitHub payloads so the tests that do
+    talk to (fake) GitHub can wire repo_details and branches for it.
+    """
+    user = User(github_id=772001, login="snapper")
+    repository = Repository(github_id=772002, full_name="octocat/alpha", default_branch="main")
+    db.add_all([user, repository])
+    db.flush()
+    return user, repository
 
 
 def _supersede_during_recovery(db, monkeypatch, winner_id) -> list[bool]:
@@ -237,3 +254,144 @@ def test_a_real_job_index_violation_at_commit_surfaces(db, pull, monkeypatch):
     errored = [e for e in logs if e["event"] == "review_insert_failed_unexpectedly"]
     assert errored, "a commit-time integrity error surfaced with nothing in the log"
     assert errored[0]["constraint"] == "uq_jobs_one_live_per_review"
+
+
+# --- repository snapshot reviews ---
+
+
+def test_second_live_repo_review_at_same_commit_conflicts(db, repo_target):
+    """THE fail-open regression test.
+
+    With pull_request_id NULL, Postgres NULLs-are-distinct means the PR live
+    index constrains repo reviews not at all; without uq_reviews_repo_sha_live
+    this second insert would quietly succeed and unlimited concurrent repo
+    jobs could pile onto one commit.
+    """
+    user, repository = repo_target
+    winner, _job = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+
+    with pytest.raises(review_service.ReviewAlreadyExists) as excinfo:
+        review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+
+    assert excinfo.value.review_id == winner.id
+    assert len(db.execute(select(Review.id)).all()) == 1
+    assert len(db.execute(select(ReviewJob.id)).all()) == 1
+
+
+def test_repo_conflict_withholds_foreign_review_id(db, repo_target):
+    user, repository = repo_target
+    review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+    other = User(github_id=772003, login="second-snapper")
+    db.add(other)
+    db.flush()
+
+    with pytest.raises(review_service.ReviewAlreadyExists) as excinfo:
+        review_service.insert_repo_review(db, other, repository, REPO_HEAD)
+
+    assert excinfo.value.review_id is None
+
+
+def test_pr_and_repo_reviews_do_not_cross_conflict(db, repo_target):
+    """A PR review and a repo review of the same repository at the SAME head
+    commit are different targets; neither live index may block the other."""
+    user, repository = repo_target
+    pull_request = PullRequest(
+        repository_id=repository.id,
+        github_number=9,
+        title="Same head as the snapshot",
+        state="open",
+        head_sha=REPO_HEAD,
+    )
+    db.add(pull_request)
+    db.flush()
+
+    review_service.insert_review(db, user, pull_request, REPO_HEAD, BASE_SHA)
+    review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+
+    assert len(db.execute(select(Review.id)).all()) == 2
+
+
+def test_failed_repo_review_does_not_block_a_new_one(db, repo_target):
+    user, repository = repo_target
+    first, _job = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+    db.execute(update(Review).where(Review.id == first.id).values(status="failed"))
+    db.commit()
+
+    second, _job = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+
+    assert second.id != first.id
+    assert len(db.execute(select(Review.id)).all()) == 2
+
+
+def test_repo_rerun_supersedes_and_pins_fresh_head(db, github, repo_target):
+    """ "Run again" on a repository means the default branch as it is NOW: the
+    branch moved, so the new review pins the new head."""
+    user, repository = repo_target
+    review, _job = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+    review.status = "completed"
+    db.flush()
+    github.repo_details["octocat/alpha"] = {"default_branch": "main"}
+    github.branches[("octocat/alpha", "main")] = MOVED_REPO_HEAD
+
+    with GitHubClient("gho_service_test") as client:
+        fresh, _job = review_service.rerun_repo_review(db, user, review, repository, client)
+
+    assert fresh.head_sha == MOVED_REPO_HEAD
+    db.refresh(review)
+    assert review.status == "superseded"
+
+
+def test_repo_rerun_refuses_live_review(db, github, repo_target):
+    user, repository = repo_target
+    review, _job = review_service.insert_repo_review(db, user, repository, REPO_HEAD)
+    review.status = "running"
+    db.flush()
+
+    with GitHubClient("gho_service_test") as client:
+        with pytest.raises(review_service.ReviewStillRunning):
+            review_service.rerun_repo_review(db, user, review, repository, client)
+
+    db.refresh(review)
+    assert review.status == "running"
+    assert len(db.execute(select(Review.id)).all()) == 1
+
+
+def test_create_repo_review_maps_a_gone_branch_to_repository_empty(db, github, repo_target):
+    user, repository = repo_target
+    # get_repo answers, but the branch lookup 404s: renamed or empty repo
+    github.repo_details["octocat/alpha"] = {"default_branch": "main"}
+
+    with GitHubClient("gho_service_test") as client:
+        with pytest.raises(review_service.RepositoryEmpty):
+            review_service.create_repo_review(db, user, repository, client)
+
+    assert db.execute(select(Review.id)).all() == []
+
+
+def test_create_repo_review_with_no_default_branch_anywhere_is_empty(db, github, repo_target):
+    user, repository = repo_target
+    repository.default_branch = None
+    db.flush()
+    # An empty repository: GitHub's payload names no default branch either
+    github.repo_details["octocat/alpha"] = {"full_name": "octocat/alpha"}
+
+    with GitHubClient("gho_service_test") as client:
+        with pytest.raises(review_service.RepositoryEmpty):
+            review_service.create_repo_review(db, user, repository, client)
+
+
+def test_create_repo_review_refreshes_a_changed_default_branch(db, github, repo_target):
+    user, repository = repo_target
+    github.repo_details["octocat/alpha"] = {"default_branch": "trunk"}
+    github.branches[("octocat/alpha", "trunk")] = REPO_HEAD
+
+    with GitHubClient("gho_service_test") as client:
+        review, _job = review_service.create_repo_review(db, user, repository, client)
+
+    db.refresh(repository)
+    assert repository.default_branch == "trunk"
+    assert review.head_sha == REPO_HEAD
+    # The head lookup asked for the refreshed branch, not the stale row's
+    assert any(
+        request.url.path == "/repos/octocat/alpha/branches/trunk" for request in github.calls
+    )

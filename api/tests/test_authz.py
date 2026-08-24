@@ -41,6 +41,7 @@ PUBLIC: dict[tuple[str, str], str] = {
 AUTHENTICATED: list[tuple[str, str, dict | None]] = [
     ("GET", "/auth/me", None),
     ("GET", "/repositories", None),
+    ("GET", "/repositories/{id}", None),
     ("GET", "/repositories/{id}/pull-requests", None),
     ("POST", "/reviews", {"pull_request_id": str(uuid.uuid4())}),
     ("GET", "/reviews/{id}", None),
@@ -76,7 +77,7 @@ def _documented_endpoints() -> set[tuple[str, str]]:
 def _template(path: str) -> str:
     """Turn a concrete test path back into its OpenAPI template."""
     return (
-        path.replace("/repositories/{id}/", "/repositories/{repo_id}/")
+        path.replace("/repositories/{id}", "/repositories/{repo_id}")
         .replace("/reviews/{id}", "/reviews/{review_id}")
         .replace("/findings/{id}/", "/findings/{finding_id}/")
     )
@@ -247,6 +248,7 @@ def two_accounts(client, db, make_user_with_session):
 def _owned_requests(repo, pull, review, finding) -> list[tuple[str, str, str, dict | None]]:
     """(label, method, path, body) for every route that takes an id someone owns."""
     return [
+        ("repo detail", "GET", f"/repositories/{repo.id}", None),
         ("repo pull requests", "GET", f"/repositories/{repo.id}/pull-requests", None),
         ("create review", "POST", "/reviews", {"pull_request_id": str(pull.id)}),
         ("read review", "GET", f"/reviews/{review.id}", None),

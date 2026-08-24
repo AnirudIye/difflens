@@ -14,6 +14,9 @@ from app import queue
 from app.models import PullRequest, Repository, Review, ReviewJob, UserRepository
 from tests.conftest import HEAD_SHA_41, pull_payload
 
+REPO_HEAD = "a1b2" * 10
+MOVED_REPO_HEAD = "f00d" * 10
+
 
 @pytest.fixture(autouse=True)
 def doorbell(monkeypatch):
@@ -38,6 +41,21 @@ def synced_pr(client, github, make_user_with_session, db):
     pr_id = next(item["id"] for item in pulls.json()["items"] if item["number"] == 41)
     pr = db.get(PullRequest, uuid.UUID(pr_id))
     return user, pr
+
+
+@pytest.fixture
+def synced_repo(client, github, make_user_with_session, db):
+    """Alice with octocat/alpha synced and its default branch head wired;
+    returns (user, repo_row)."""
+    user, _ = make_user_with_session("alice")
+    sync = client.get("/repositories")
+    assert sync.status_code == 200
+    repo_id = next(
+        item["id"] for item in sync.json()["items"] if item["full_name"] == "octocat/alpha"
+    )
+    github.repo_details["octocat/alpha"] = {"default_branch": "main"}
+    github.branches[("octocat/alpha", "main")] = REPO_HEAD
+    return user, db.get(Repository, uuid.UUID(repo_id))
 
 
 def test_create_requires_auth(client):
@@ -391,3 +409,201 @@ def test_cancel_finished_review_conflicts(client, db, github, synced_pr):
     response = client.post(f"/reviews/{review_id}/cancel")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "review_finished"
+
+
+# --- repository snapshot reviews ---
+
+
+def test_create_repo_review_pins_the_branch_head(client, db, github, synced_repo, doorbell):
+    user, repo = synced_repo
+
+    response = client.post("/reviews", json={"repository_id": str(repo.id)})
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["target"] == "repository"
+    assert body["status"] == "queued"
+    assert body["pull_request"] is None
+    assert body["pull_request_id"] is None
+    assert body["base_sha"] is None
+    assert body["head_sha"] == REPO_HEAD
+    assert body["repository"] == {
+        "id": str(repo.id),
+        "full_name": "octocat/alpha",
+        "default_branch": "main",
+        "html_url": "https://github.com/octocat/alpha",
+    }
+
+    review = db.get(Review, uuid.UUID(body["id"]))
+    assert review is not None and review.user_id == user.id
+    job = db.execute(select(ReviewJob).where(ReviewJob.review_id == review.id)).scalar_one()
+    assert doorbell == [str(job.id)]
+
+
+def test_create_with_both_targets_is_rejected(client, synced_repo, doorbell):
+    _user, repo = synced_repo
+
+    response = client.post(
+        "/reviews",
+        json={"pull_request_id": str(uuid.uuid4()), "repository_id": str(repo.id)},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert "exactly one" in error["message"]
+    assert doorbell == []
+
+
+def test_create_with_neither_target_is_rejected(client, synced_repo, doorbell):
+    response = client.post("/reviews", json={})
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request"
+    assert "exactly one" in error["message"]
+    assert doorbell == []
+
+
+def test_foreign_repository_indistinguishable_from_missing(
+    client, github, synced_repo, make_user_with_session
+):
+    _alice, repo = synced_repo
+    make_user_with_session("bob")
+
+    as_bob = client.post("/reviews", json={"repository_id": str(repo.id)})
+    missing = client.post("/reviews", json={"repository_id": str(uuid.uuid4())})
+
+    assert as_bob.status_code == missing.status_code == 404
+    bob_body, missing_body = as_bob.json(), missing.json()
+    assert bob_body["error"].pop("request_id")
+    assert missing_body["error"].pop("request_id")
+    assert bob_body == missing_body
+
+
+def test_demo_repository_is_not_reviewable_even_when_linked(
+    client, db, github, synced_repo, doorbell
+):
+    """is_demo is excluded structurally, so a future seeding change that links
+    the demo to a user must not quietly open it to authenticated reviews."""
+    user, _repo = synced_repo
+    demo = Repository(github_id=990001, full_name="difflens/demo-repo", is_demo=True)
+    db.add(demo)
+    db.flush()
+    db.add(UserRepository(user_id=user.id, repository_id=demo.id))
+    db.flush()
+
+    as_linked = client.post("/reviews", json={"repository_id": str(demo.id)})
+    missing = client.post("/reviews", json={"repository_id": str(uuid.uuid4())})
+
+    assert as_linked.status_code == missing.status_code == 404
+    linked_body, missing_body = as_linked.json(), missing.json()
+    assert linked_body["error"].pop("request_id")
+    assert missing_body["error"].pop("request_id")
+    assert linked_body == missing_body
+
+
+def test_gone_branch_answers_repository_empty(client, github, synced_repo, doorbell):
+    _user, repo = synced_repo
+    del github.branches[("octocat/alpha", "main")]
+
+    response = client.post("/reviews", json={"repository_id": str(repo.id)})
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "repository_empty"
+    assert error["message"] == (
+        "DiffLens could not find a commit to review: the repository may "
+        "be empty or its default branch may have been renamed. Refresh "
+        "from GitHub and try again."
+    )
+    assert doorbell == []
+
+
+def test_duplicate_live_repo_review_conflicts(client, db, github, synced_repo, doorbell):
+    _user, repo = synced_repo
+    first = client.post("/reviews", json={"repository_id": str(repo.id)})
+    assert first.status_code == 201
+
+    second = client.post("/reviews", json={"repository_id": str(repo.id)})
+
+    assert second.status_code == 409
+    error = second.json()["error"]
+    assert error["code"] == "review_already_exists"
+    assert error["review_id"] == first.json()["id"]
+    assert error["message"] == "A live review already covers this repository at this commit"
+    assert len(db.execute(select(Review.id)).all()) == 1
+    assert len(doorbell) == 1
+
+
+def test_get_repo_review_parses_the_pipeline_markers(client, db, github, synced_repo, doorbell):
+    _user, repo = synced_repo
+    created = client.post("/reviews", json={"repository_id": str(repo.id)}).json()
+    review = db.get(Review, uuid.UUID(created["id"]))
+    review.pipeline_version = (
+        "cheap ai=gemini ai_coverage=37/412 ai_capped=keyless findings_truncated "
+        "analyzers_skipped=eslint,ruff ai_chunks_failed=2"
+    )
+    db.flush()
+
+    body = client.get(f"/reviews/{created['id']}").json()
+
+    assert body["ai_coverage"] == {"files_covered": 37, "files_total": 412}
+    assert body["ai_capped"] == "keyless"
+    assert body["findings_truncated"] is True
+    assert body["analyzers_skipped"] == ["eslint", "ruff"]
+
+
+def test_pull_request_review_payload_has_no_repository_block(client, synced_pr, doorbell):
+    """Regression: base_sha and pull_request_id used to go through str(), so a
+    None would have been shipped as the literal string "None"."""
+    _user, pr = synced_pr
+    created = client.post("/reviews", json={"pull_request_id": str(pr.id)}).json()
+
+    body = client.get(f"/reviews/{created['id']}").json()
+
+    assert body["target"] == "pull_request"
+    assert body["repository"] is None
+    assert body["repository_id"] is None
+    assert body["pull_request_id"] == str(pr.id)
+    assert body["ai_coverage"] is None
+    assert body["ai_capped"] is None
+    assert body["findings_truncated"] is False
+    assert body["analyzers_skipped"] is None
+
+
+def test_repo_rerun_pins_the_fresh_branch_head(client, db, github, synced_repo, doorbell):
+    _user, repo = synced_repo
+    first = client.post("/reviews", json={"repository_id": str(repo.id)}).json()
+    old = _finish(db, uuid.UUID(first["id"]))
+    github.branches[("octocat/alpha", "main")] = MOVED_REPO_HEAD
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 201
+    fresh = response.json()
+    assert fresh["id"] != first["id"]
+    assert fresh["target"] == "repository"
+    assert fresh["head_sha"] == MOVED_REPO_HEAD
+    assert fresh["repository"]["full_name"] == "octocat/alpha"
+    db.refresh(old)
+    assert old.status == "superseded"
+    assert len(doorbell) == 2
+
+
+def test_repo_rerun_refuses_while_the_review_is_live(client, db, github, synced_repo, doorbell):
+    _user, repo = synced_repo
+    first = client.post("/reviews", json={"repository_id": str(repo.id)}).json()
+    review = db.get(Review, uuid.UUID(first["id"]))
+    job = db.execute(select(ReviewJob).where(ReviewJob.review_id == review.id)).scalar_one()
+    review.status = "running"
+    job.status = "running"
+    db.flush()
+
+    response = client.post(f"/reviews/{first['id']}/rerun")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "review_still_running"
+    db.refresh(review)
+    assert review.status == "running"
+    assert len(db.execute(select(Review.id)).all()) == 1

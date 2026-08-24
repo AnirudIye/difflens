@@ -7,7 +7,7 @@ from datetime import datetime
 import httpx
 from sqlalchemy import func, select
 
-from app.models import ProviderConnection, PullRequest, Repository, UserRepository
+from app.models import ProviderConnection, PullRequest, Repository, Review, UserRepository
 
 
 def test_list_repositories_requires_auth(client):
@@ -149,3 +149,90 @@ def test_github_server_error_maps_to_502(client, github, make_user_with_session)
     response = client.get("/repositories")
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "github_unavailable"
+
+
+# --- GET /repositories/{repo_id} ---
+
+
+def _synced_repo_id(client) -> str:
+    sync = client.get("/repositories")
+    assert sync.status_code == 200
+    return next(item["id"] for item in sync.json()["items"] if item["full_name"] == "octocat/alpha")
+
+
+def test_get_repository_without_a_repo_review_answers_null(client, github, make_user_with_session):
+    make_user_with_session("alice")
+    repo_id = _synced_repo_id(client)
+
+    response = client.get(f"/repositories/{repo_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == repo_id
+    assert body["full_name"] == "octocat/alpha"
+    assert body["default_branch"] == "main"
+    assert body["latest_repo_review"] is None
+
+
+def test_get_repository_carries_the_latest_repo_review(client, db, github, make_user_with_session):
+    user, _ = make_user_with_session("alice")
+    repo_id = _synced_repo_id(client)
+    review = Review(
+        user_id=user.id,
+        repository_id=uuid.UUID(repo_id),
+        head_sha="e" * 40,
+        base_sha=None,
+        status="completed",
+    )
+    db.add(review)
+    db.flush()
+
+    body = client.get(f"/repositories/{repo_id}").json()
+
+    block = body["latest_repo_review"]
+    assert block["id"] == str(review.id)
+    assert block["status"] == "completed"
+    assert block["head_sha"] == "e" * 40
+    assert block["created_at"]
+
+
+def test_another_users_repo_review_stays_out_of_the_block(
+    client, db, github, make_user_with_session
+):
+    """Bob shares the repository, but alice's snapshot review is not his."""
+    alice, _ = make_user_with_session("alice")
+    repo_id = _synced_repo_id(client)
+    db.add(
+        Review(
+            user_id=alice.id,
+            repository_id=uuid.UUID(repo_id),
+            head_sha="e" * 40,
+            base_sha=None,
+            status="completed",
+        )
+    )
+    db.flush()
+    bob, _ = make_user_with_session("bob")
+    db.add(UserRepository(user_id=bob.id, repository_id=uuid.UUID(repo_id)))
+    db.flush()
+
+    body = client.get(f"/repositories/{repo_id}").json()
+
+    assert body["latest_repo_review"] is None
+
+
+def test_get_repository_foreign_id_indistinguishable_from_missing(
+    client, github, make_user_with_session
+):
+    make_user_with_session("alice")
+    repo_id = _synced_repo_id(client)
+    make_user_with_session("bob")
+
+    as_bob = client.get(f"/repositories/{repo_id}")
+    missing = client.get(f"/repositories/{uuid.uuid4()}")
+
+    assert as_bob.status_code == missing.status_code == 404
+    bob_body, missing_body = as_bob.json(), missing.json()
+    assert bob_body["error"].pop("request_id")
+    assert missing_body["error"].pop("request_id")
+    assert bob_body == missing_body

@@ -19,8 +19,10 @@ os.environ["TOKEN_ENCRYPTION_KEY"] = "test-token-encryption-key"
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 
 import base64
+import io
 import itertools
 import re
+import tarfile
 from pathlib import Path
 
 import httpx
@@ -143,9 +145,27 @@ class FakeGitHub:
         # (full_name, base_sha, head_sha) -> compare payload; (path, ref) -> bytes
         self.compares: dict[tuple[str, str, str], dict] = {}
         self.contents: dict[tuple[str, str], bytes] = {}
+        # full_name -> GET /repos/{full_name} payload
+        self.repo_details: dict[str, dict] = {}
+        # (full_name, branch) -> head commit sha
+        self.branches: dict[tuple[str, str], str] = {}
+        # (full_name, sha) -> tar.gz bytes, served through a codeload redirect
+        self.tarballs: dict[tuple[str, str], bytes] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
+        if request.url.host == "codeload.example":
+            # The cross-origin hop the tarball endpoint 302s to. httpx must
+            # have dropped the Authorization header on the way here.
+            assert "authorization" not in request.headers
+            codeload = re.fullmatch(r"/([^/]+/[^/]+)/tar\.gz/(.+)", request.url.path)
+            if codeload:
+                blob = self.tarballs.get((codeload.group(1), codeload.group(2)))
+                if blob is not None:
+                    return httpx.Response(
+                        200, content=blob, headers={"Content-Type": "application/gzip"}
+                    )
+            return httpx.Response(404, json={"message": "Not Found"})
         assert request.headers["Authorization"].startswith("Bearer gho_")
         assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
         path = request.url.path
@@ -177,6 +197,29 @@ class FakeGitHub:
                     200,
                     json={"encoding": "base64", "content": base64.b64encode(blob).decode()},
                 )
+            return httpx.Response(404, json={"message": "Not Found"})
+        branch = re.fullmatch(r"/repos/([^/]+/[^/]+)/branches/(.+)", path)
+        if branch:
+            sha = self.branches.get((branch.group(1), branch.group(2)))
+            if sha is not None:
+                return httpx.Response(200, json={"name": branch.group(2), "commit": {"sha": sha}})
+            return httpx.Response(404, json={"message": "Not Found"})
+        tarball = re.fullmatch(r"/repos/([^/]+/[^/]+)/tarball/(.+)", path)
+        if tarball:
+            key = (tarball.group(1), tarball.group(2))
+            if key in self.tarballs:
+                # GitHub answers with a 302 to codeload; following it is the
+                # client's job, which is exactly what this exercises
+                return httpx.Response(
+                    302,
+                    headers={"Location": f"https://codeload.example/{key[0]}/tar.gz/{key[1]}"},
+                )
+            return httpx.Response(404, json={"message": "Not Found"})
+        repo_detail = re.fullmatch(r"/repos/([^/]+/[^/]+)", path)
+        if repo_detail:
+            payload = self.repo_details.get(repo_detail.group(1))
+            if payload is not None:
+                return httpx.Response(200, json=payload)
             return httpx.Response(404, json={"message": "Not Found"})
         return httpx.Response(404, json={"message": "Not Found"})
 
@@ -235,6 +278,28 @@ def compare_payload(diff_text: str) -> dict:
         patch = "".join(str(hunk) for hunk in patched).rstrip("\n")
         files.append({"filename": filename, "status": status, "patch": patch})
     return {"status": "ahead", "files": files}
+
+
+def make_tarball(
+    files: dict[str, bytes],
+    prefix: str = "octocat-alpha-abc1234",
+    extra_members: list[tuple[tarfile.TarInfo, bytes | None]] | None = None,
+) -> bytes:
+    """An in-memory tar.gz shaped like GitHub's: one top-level prefix directory.
+
+    extra_members lets a test smuggle in hostile members (symlinks, traversal
+    paths, oversized files) exactly as an attacker-influenced tarball would
+    carry them; each entry is (TarInfo, content bytes or None).
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, content in files.items():
+            info = tarfile.TarInfo(f"{prefix}/{name}")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        for info, content in extra_members or []:
+            archive.addfile(info, io.BytesIO(content) if content is not None else None)
+    return buffer.getvalue()
 
 
 def wire_fixture(github, name: str) -> dict:

@@ -1,8 +1,16 @@
-"""GitHubClient.get_file_content: the worker's window onto head-SHA file state."""
+"""GitHubClient's non-JSON and repo-snapshot surface: contents, branch heads,
+and the tarball download with its redirect and size cap."""
 
 import httpx
+import pytest
 
-from app.services.github_client import GitHubClient
+import app.services.github_client as github_client
+from app.services.github_client import (
+    GitHubClient,
+    GitHubNotFound,
+    GitHubSnapshotTooLarge,
+)
+from tests.conftest import make_tarball
 
 HEAD = "0f1e2d3c4b5a69788796a5b4c3d2e1f0aabbccdd"
 
@@ -29,3 +37,57 @@ def test_get_file_content_returns_none_for_directories(github):
     github.responses["/repos/octocat/alpha/contents/app"] = httpx.Response(200, json=[])
     with GitHubClient("gho_test") as client:
         assert client.get_file_content("octocat/alpha", "app", HEAD) is None
+
+
+def test_get_repo_returns_the_payload(github):
+    payload = {"full_name": "octocat/alpha", "default_branch": "trunk"}
+    github.repo_details["octocat/alpha"] = payload
+    with GitHubClient("gho_test") as client:
+        assert client.get_repo("octocat/alpha") == payload
+
+
+def test_get_branch_head_returns_the_commit_sha(github):
+    github.branches[("octocat/alpha", "main")] = HEAD
+    with GitHubClient("gho_test") as client:
+        assert client.get_branch_head("octocat/alpha", "main") == HEAD
+
+
+def test_get_branch_head_maps_404_to_not_found(github):
+    # An empty repository and a renamed branch both answer 404
+    with GitHubClient("gho_test") as client:
+        with pytest.raises(GitHubNotFound):
+            client.get_branch_head("octocat/alpha", "main")
+
+
+def test_download_tarball_follows_the_redirect_and_streams_to_disk(github, tmp_path):
+    """GitHub 302s the tarball endpoint to codeload on another origin; the
+    client must follow the hop (dropping auth, which the fake asserts) and
+    stream the body into the destination file byte for byte."""
+    blob = make_tarball({"a.py": b"x = 1\n"})
+    github.tarballs[("octocat/alpha", HEAD)] = blob
+    destination = tmp_path / "snapshot.tar.gz"
+
+    with GitHubClient("gho_test") as client:
+        client.download_tarball("octocat/alpha", HEAD, destination)
+
+    assert destination.read_bytes() == blob
+    hosts = [request.url.host for request in github.calls]
+    assert "codeload.example" in hosts, "the redirect was never followed"
+
+
+def test_download_tarball_refuses_a_body_over_the_cap(github, tmp_path, monkeypatch):
+    blob = make_tarball({"a.py": b"x = 1\n"})
+    github.tarballs[("octocat/alpha", HEAD)] = blob
+    monkeypatch.setattr(github_client, "MAX_TARBALL_BYTES", len(blob) - 1)
+
+    with GitHubClient("gho_test") as client:
+        with pytest.raises(GitHubSnapshotTooLarge):
+            client.download_tarball("octocat/alpha", HEAD, tmp_path / "snapshot.tar.gz")
+
+
+def test_download_tarball_maps_404_to_not_found(github, tmp_path):
+    destination = tmp_path / "snapshot.tar.gz"
+    with GitHubClient("gho_test") as client:
+        with pytest.raises(GitHubNotFound):
+            client.download_tarball("octocat/alpha", HEAD, destination)
+    assert not destination.exists()

@@ -16,10 +16,11 @@ from sqlalchemy import select
 
 from app import queue
 from app.models import Finding, ProviderConnection, Review, ReviewJob
-from tests.conftest import BASE_SHA, HEAD_SHA_41, wire_fixture
+from tests.conftest import BASE_SHA, HEAD_SHA_41, make_tarball, wire_fixture
 from worker import jobs, runner
 
 FIXTURES = Path(__file__).parent / "fixtures"
+REPO_HEAD = "a1b2" * 10
 
 
 @pytest.fixture(autouse=True)
@@ -729,3 +730,199 @@ def test_process_job_refuses_workspace_escape(db, github, review_and_job):
     assert outcome == "completed"
     fetched_paths = [request.url.path for request in github.calls]
     assert not any("evil" in path for path in fetched_paths)
+
+
+# --- repository snapshot jobs ---
+
+
+@pytest.fixture
+def repo_review_and_job(client, db, github, make_user_with_session):
+    """Alice's queued snapshot review of octocat/alpha, created through the API."""
+    make_user_with_session("alice")
+    sync = client.get("/repositories")
+    repo_id = next(
+        item["id"] for item in sync.json()["items"] if item["full_name"] == "octocat/alpha"
+    )
+    github.repo_details["octocat/alpha"] = {"default_branch": "main"}
+    github.branches[("octocat/alpha", "main")] = REPO_HEAD
+    created = client.post("/reviews", json={"repository_id": repo_id})
+    assert created.status_code == 201
+    review = db.get(Review, uuid.UUID(created.json()["id"]))
+    job = db.execute(select(ReviewJob).where(ReviewJob.review_id == review.id)).scalar_one()
+    return review, job
+
+
+def test_repo_job_completes_from_tarball(db, github, repo_review_and_job):
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball(
+        {"app.py": b"import os\n"}  # unused import: ruff F401
+    )
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "completed"
+    assert review.status == "completed"
+    rows = list(db.execute(select(Finding).where(Finding.review_id == review.id)).scalars())
+    assert any("F401" in row.title for row in rows), "the extracted file was never analyzed"
+    assert review.findings_count == len(rows)
+    # Repo reviews always record how much of the tree the AI read
+    assert "ai_coverage=" in review.pipeline_version
+
+
+def test_repo_tarball_404_fails_snapshot_gone(db, github, repo_review_and_job):
+    review, job = repo_review_and_job
+    # No tarball wired: the fake answers 404, like a SHA garbage-collected away
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "failed"
+    assert job.attempts == 1  # permanent: no retry burned
+    assert review.error_user_message == runner.SNAPSHOT_GONE_MESSAGE
+
+
+def test_repo_too_large_fails_permanently_without_retries(
+    db, github, repo_review_and_job, monkeypatch
+):
+    import worker.snapshot as snapshot_module
+
+    review, job = repo_review_and_job
+    monkeypatch.setattr(snapshot_module, "MAX_SNAPSHOT_FILES", 1)
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball(
+        {"a.py": b"x = 1\n", "b.py": b"y = 2\n"}
+    )
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "failed"
+    assert job.attempts == 1, "the repository is exactly as big on every retry"
+    assert review.error_user_message == runner.REPO_TOO_LARGE_MESSAGE
+
+
+def test_corrupt_tarball_fails_with_bad_snapshot(db, github, repo_review_and_job):
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = b"not a tar at all"
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "failed"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.attempts == 1
+    assert review.error_user_message == runner.BAD_SNAPSHOT_MESSAGE
+
+
+def _capture_repo_analysis_job(monkeypatch, ai_source: str) -> dict:
+    """Stub the provider and the pipeline; return where the AnalysisJob lands."""
+    from app.ai.mock import MockProvider
+    from app.analysis.models import ReviewResult, ReviewStats
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", MockProvider(), ai_source)
+    )
+
+    def fake_run_review(analysis_job, provider=None, stop_check=None, ai_config_errors=()):
+        captured["job"] = analysis_job
+        return ReviewResult(summary="stubbed", findings=[], stats=ReviewStats())
+
+    monkeypatch.setattr(runner, "run_review", fake_run_review)
+    return captured
+
+
+def test_repo_review_keyless_gets_one_chunk(db, github, repo_review_and_job, monkeypatch):
+    _review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+    captured = _capture_repo_analysis_job(monkeypatch, ai_source="server")
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    analysis_job = captured["job"]
+    assert analysis_job.target == "repository"
+    assert analysis_job.base_sha is None
+    assert analysis_job.ai_chunk_cap == 1
+    assert analysis_job.ai_cap_reason == "keyless"
+
+
+def test_repo_review_byok_gets_the_full_chunk_cap(db, github, repo_review_and_job, monkeypatch):
+    from app.analysis.repo_review import MAX_AI_CHUNKS
+
+    _review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+    captured = _capture_repo_analysis_job(monkeypatch, ai_source="user")
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    analysis_job = captured["job"]
+    assert analysis_job.ai_chunk_cap == MAX_AI_CHUNKS == 40
+    assert analysis_job.ai_cap_reason is None
+
+
+def test_cancel_between_chunks_returns_cancelled(db, github, repo_review_and_job, monkeypatch):
+    from sqlalchemy import update
+
+    from app.analysis.repo_review import AnalysisStopped
+
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+
+    def cancel_mid_ai(analysis_job, provider=None, stop_check=None, ai_config_errors=()):
+        # The cancel flag lands while the AI stage is mid-flight. The next
+        # between-chunks stop_check is the real _checkpoint: it must notice,
+        # finish the cancellation, and hand back the outcome that
+        # run_repo_ai_stage would wrap in AnalysisStopped.
+        db.execute(update(ReviewJob).where(ReviewJob.id == job.id).values(cancel_requested=True))
+        db.commit()
+        assert stop_check is not None
+        outcome = stop_check()
+        assert outcome == "cancelled"
+        raise AnalysisStopped(outcome)
+
+    monkeypatch.setattr(runner, "run_review", cancel_mid_ai)
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "cancelled"
+    db.refresh(job)
+    db.refresh(review)
+    assert job.status == "cancelled"
+    assert review.status == "cancelled"
+    assert list(db.execute(select(Finding)).scalars()) == []
+
+
+def test_truncation_and_analyzer_skip_markers_persist(db, github, repo_review_and_job, monkeypatch):
+    from app.ai.mock import MockProvider
+    from app.analysis.models import ReviewResult, ReviewStats
+
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+    stats = ReviewStats(
+        truncated=True,
+        analyzers_skipped={"ruff": "boom", "eslint": "timed out after 300s"},
+    )
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", MockProvider(), "server")
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_review",
+        lambda *args, **kwargs: ReviewResult(summary="stubbed", findings=[], stats=stats),
+    )
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    db.refresh(review)
+    markers = review.pipeline_version.split()
+    assert "findings_truncated" in markers
+    assert "analyzers_skipped=eslint,ruff" in markers  # sorted, comma-joined

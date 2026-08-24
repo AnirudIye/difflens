@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models import (
     LIVE_JOB_INDEX,
+    LIVE_REPO_REVIEW_INDEX,
     LIVE_REVIEW_INDEX,
     Feedback,
     Finding,
@@ -135,5 +136,66 @@ def test_the_named_indexes_are_the_ones_the_migrations_built(engine):
                 text("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
             ).scalars()
         )
-    missing = {LIVE_REVIEW_INDEX, LIVE_JOB_INDEX} - present
+    missing = {LIVE_REVIEW_INDEX, LIVE_REPO_REVIEW_INDEX, LIVE_JOB_INDEX} - present
     assert not missing, f"named in app code but absent from the database: {sorted(missing)}"
+
+
+def test_a_review_with_both_targets_is_rejected(db):
+    user, pull_request = _seed_pull_request(db)
+
+    db.add(
+        Review(
+            user_id=user.id,
+            pull_request_id=pull_request.id,
+            repository_id=pull_request.repository_id,
+            head_sha="a" * 40,
+            base_sha="b" * 40,
+        )
+    )
+    with pytest.raises(IntegrityError) as excinfo:
+        db.flush()
+    assert "ck_reviews_one_target" in str(excinfo.value)
+
+
+def test_a_review_with_no_target_is_rejected(db):
+    user, _pull_request = _seed_pull_request(db)
+
+    db.add(Review(user_id=user.id, head_sha="a" * 40, base_sha="b" * 40))
+    with pytest.raises(IntegrityError) as excinfo:
+        db.flush()
+    assert "ck_reviews_one_target" in str(excinfo.value)
+
+
+def test_a_pull_request_review_must_carry_a_base_sha(db):
+    user, pull_request = _seed_pull_request(db)
+
+    db.add(
+        Review(
+            user_id=user.id,
+            pull_request_id=pull_request.id,
+            head_sha="a" * 40,
+            base_sha=None,
+        )
+    )
+    with pytest.raises(IntegrityError) as excinfo:
+        db.flush()
+    assert "ck_reviews_pr_has_base" in str(excinfo.value)
+
+
+def test_a_repository_review_without_a_base_sha_is_accepted(db):
+    user, pull_request = _seed_pull_request(db)
+
+    db.add(
+        Review(
+            user_id=user.id,
+            repository_id=pull_request.repository_id,
+            head_sha="a" * 40,
+            base_sha=None,
+        )
+    )
+    db.flush()
+    stored = db.execute(
+        select(Review).where(Review.repository_id == pull_request.repository_id)
+    ).scalar_one()
+    assert stored.base_sha is None
+    assert stored.pull_request_id is None
