@@ -76,6 +76,11 @@ def ai_coverage(review: Review) -> dict[str, int] | None:
     return {"files_covered": int(covered), "files_total": int(total)}
 
 
+def _int_marker(review: Review, prefix: str) -> int:
+    raw = pipeline_marker(review, prefix)
+    return int(raw) if raw and raw.isdigit() else 0
+
+
 def analyzers_skipped(review: Review) -> list[str] | None:
     raw = pipeline_marker(review, "analyzers_skipped=")
     if not raw:
@@ -127,8 +132,15 @@ def review_item(
         "repository": context["repository"],
         "ai_model": ai_model(review),
         "ai_skipped": ai_skipped(review),
+        # "config" means the provider rejected the request outright, so the
+        # page must not offer an API key to someone whose key is the problem
+        "ai_failed": pipeline_marker(review, "ai_failed="),
         "ai_coverage": ai_coverage(review),
         "ai_capped": pipeline_marker(review, "ai_capped="),
+        # How many AI passes failed outright. Without this the page cannot
+        # tell "the free tier capped coverage" from "the provider was down",
+        # and would sell an API key as the cure for an outage.
+        "ai_chunks_failed": _int_marker(review, "ai_chunks_failed="),
         "findings_truncated": has_marker(review, "findings_truncated"),
         "analyzers_skipped": analyzers_skipped(review),
         "status": review.status,

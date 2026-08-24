@@ -35,6 +35,8 @@ export default function ConfirmDialog({
   // mounted first named them both: "Run again" was announced as "Stop
   // this review?"
   const titleId = useId();
+  const bodyId = useId();
+  const opener = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -42,9 +44,29 @@ export default function ConfirmDialog({
       return;
     }
     if (open && !el.open) {
+      opener.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       el.showModal();
     } else if (!open && el.open) {
       el.close();
+      // close() hands focus back to the opener by itself, but only while the
+      // opener is still focusable. Confirming here is exactly the case where
+      // it is not: the button that opened the dialog disables itself the
+      // moment the action starts, so focus lands on <body> and a keyboard
+      // user is dropped back at the top of the document. Fall back to the
+      // page heading, which is a real place to be.
+      const previous = opener.current;
+      requestAnimationFrame(() => {
+        if (previous && previous.isConnected && !previous.hasAttribute("disabled")) {
+          previous.focus();
+          return;
+        }
+        const heading = document.querySelector<HTMLElement>("main h1, main h2");
+        if (heading) {
+          heading.tabIndex = -1;
+          heading.focus();
+        }
+      });
     }
   }, [open]);
 
@@ -53,6 +75,7 @@ export default function ConfirmDialog({
       className="confirm"
       ref={ref}
       aria-labelledby={titleId}
+      aria-describedby={bodyId}
       onCancel={(event) => {
         // Escape: let React own the open state rather than the DOM
         event.preventDefault();
@@ -72,7 +95,9 @@ export default function ConfirmDialog({
         <h2 className="confirm-title" id={titleId}>
           {title}
         </h2>
-        <p className="confirm-body">{body}</p>
+        <p className="confirm-body" id={bodyId}>
+          {body}
+        </p>
         <div className="confirm-actions">
           <button
             className="button button-quiet"

@@ -49,6 +49,11 @@ const PROCESSORS: { name: string; role: string; url: string }[] = [
     role: "AI reviewer, only if you add your own OpenAI key",
     url: "https://openai.com/policies/privacy-policy/",
   },
+  {
+    name: "Resend",
+    role: "Delivers contact form messages to the operator by email",
+    url: "https://resend.com/legal/privacy-policy",
+  },
 ];
 
 export default function PrivacyPage() {
@@ -93,6 +98,13 @@ export default function PrivacyPage() {
           </li>
           <li>No precise location data.</li>
         </ul>
+        <p>
+          One thing that is easy to miss: DiffLens does handle your IP address,
+          because it has to. It is used to rate limit the pages anyone can use
+          without an account, and it appears in ordinary server logs. It is
+          never linked to your account, never used to profile you, and never
+          sold or shared. The detail is in the next list.
+        </p>
         <h3>What we do collect</h3>
         <ul>
           <li>
@@ -117,7 +129,17 @@ export default function PrivacyPage() {
           <li>Your feedback on findings (useful, not useful, dismissed).</li>
           <li>
             Contact form submissions: the message, and a name, email address,
-            and subject only if you choose to give them.
+            and subject only if you choose to give them. The message is stored
+            in our database and, when email forwarding is configured, sent on
+            to the operator through Resend, listed in the processor table
+            below. Your IP address is deliberately not stored with it.
+          </li>
+          <li>
+            Your IP address, for rate limiting and in server logs. Rate limit
+            counters are held in Redis under a key containing the address and
+            expire within an hour. Server logs record request addresses in the
+            ordinary way and are short lived. Neither is stored in the database
+            and neither is attached to your account.
           </li>
         </ul>
 
@@ -222,8 +244,14 @@ export default function PrivacyPage() {
           </li>
           <li>Contact messages: kept until your request is handled.</li>
           <li>
-            Server logs: redacted of tokens and secrets, and short-lived on
-            our hosting provider.
+            Rate limit counters: held in Redis under a key containing your IP
+            address, and expire automatically within an hour.
+          </li>
+          <li>
+            Server logs: our application logs are redacted of tokens and
+            secrets before they are written. Logs record request IP addresses
+            in the ordinary way, and everything is short-lived on our hosting
+            provider.
           </li>
         </ul>
 
@@ -321,7 +349,10 @@ export default function PrivacyPage() {
               <tr>
                 <td>Identifiers</td>
                 <td>Yes</td>
-                <td>GitHub login, display name, avatar</td>
+                <td>
+                  GitHub login, display name, avatar, and IP address for rate
+                  limiting and server logs
+                </td>
               </tr>
               <tr>
                 <td>Customer records (payment, government ID)</td>

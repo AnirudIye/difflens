@@ -30,7 +30,12 @@ from app.services.repo_service import apply_pull_payload
 log = structlog.get_logger()
 
 LIVE_REVIEW_STATUSES = ("queued", "running", "completed")
-TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled")
+# Every state a review can be in once no worker will touch it again.
+# "superseded" belongs here: a replaced review has finished in every sense
+# that matters to a caller. Leaving it out told anyone rerunning one that it
+# "has not finished yet", and let cancel answer 200 for a review that ended
+# long ago.
+TERMINAL_REVIEW_STATUSES = ("completed", "failed", "cancelled", "superseded")
 
 
 class PullRequestClosed(Exception):

@@ -3,7 +3,19 @@
 // findings identically; two copies of these rules would drift and the demo
 // would quietly stop being a picture of the real thing.
 
-import type { Finding, Review, Severity } from "./types";
+import type { Finding, Review, ReviewStatus, Severity } from "./types";
+
+// One review status wears one name everywhere. The repository page used to
+// print the raw enum ("superseded"), which is a word from the schema, not a
+// word for a person.
+export const STATUS_LABEL: Record<ReviewStatus, string> = {
+  queued: "Queued",
+  running: "Analyzing",
+  completed: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  superseded: "Replaced by a newer review",
+};
 
 export const SOURCE_LABEL: Record<Finding["source"], string> = {
   deterministic: "analyzer",

@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy import func, select
 
 from app.models import ProviderConnection, PullRequest, Repository, Review, UserRepository
+from app.services.github_client import GitHubClient
 
 
 def test_list_repositories_requires_auth(client):
@@ -236,3 +237,31 @@ def test_get_repository_foreign_id_indistinguishable_from_missing(
     assert bob_body["error"].pop("request_id")
     assert missing_body["error"].pop("request_id")
     assert bob_body == missing_body
+
+
+def test_linking_a_repository_twice_is_not_an_error(db, github, make_user_with_session):
+    """The race, reduced to the thing that actually breaks.
+
+    sync_user_repositories decides what to link from a snapshot it read
+    earlier. When another request commits the same links in between, the
+    second insert hits the primary key. Calling the link step twice with the
+    same ids is that situation exactly, and it must not raise: with plain ORM
+    inserts it raises UniqueViolation, which reached the caller as a 500 on
+    the first page a new account ever sees.
+    """
+    from app.services import repo_service
+
+    user, _ = make_user_with_session("racer")
+    with GitHubClient("gho_racer_test_token") as client:
+        repos = repo_service.sync_user_repositories(db, user, client)
+    repo_ids = [repo.id for repo in repos]
+    assert repo_ids
+
+    # The stale snapshot: these are already linked, and we link them again
+    repo_service.link_repositories(db, user, repo_ids)
+    db.commit()
+
+    linked = db.execute(
+        select(func.count()).select_from(UserRepository).where(UserRepository.user_id == user.id)
+    ).scalar()
+    assert linked == len(repo_ids)  # no duplicates, no error

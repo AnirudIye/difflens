@@ -284,3 +284,19 @@ def test_the_limit_counts_addresses_separately(client, db, clean_contact_window,
     assert client.post("/contact", json={"message": "one"}, headers=first).status_code == 200
     assert client.post("/contact", json={"message": "two"}, headers=first).status_code == 429
     assert client.post("/contact", json={"message": "three"}, headers=other).status_code == 200
+
+
+def test_a_null_byte_is_stripped_rather_than_crashing_the_insert(client, db):
+    """U+0000 cannot be stored in a Postgres text column, so an unstripped
+    one turned a public form post into a 500. It is client input, and no
+    message means anything by it, so it is removed and the rest is kept."""
+    response = client.post(
+        "/contact",
+        json={"message": "before\x00after", "name": "a\x00b", "subject": "s\x00t"},
+    )
+
+    assert response.status_code == 200
+    row = db.execute(select(ContactMessage)).scalars().one()
+    assert row.message == "beforeafter"
+    assert row.name == "ab"
+    assert row.subject == "st"

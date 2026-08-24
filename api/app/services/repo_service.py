@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models import PullRequest, Repository, User, UserRepository
@@ -15,6 +16,25 @@ def list_user_repositories(db: Session, user: User) -> list[Repository]:
             .where(UserRepository.user_id == user.id)
             .order_by(Repository.last_synced_at.desc(), Repository.full_name)
         ).scalars()
+    )
+
+
+def link_repositories(db: Session, user: User, repository_ids: list) -> None:
+    """Link a user to repositories, tolerating rows that already exist.
+
+    ON CONFLICT DO NOTHING rather than ORM inserts, because the caller decides
+    what is missing from a snapshot it read earlier. Two requests syncing the
+    same account at once (which is what a first sign-in does, one call per
+    open tab) both compute the same missing set and race to insert the same
+    primary key; the loser used to escape as a raw 500 on the first page a new
+    account ever sees.
+    """
+    if not repository_ids:
+        return
+    db.execute(
+        pg_insert(UserRepository)
+        .values([{"user_id": user.id, "repository_id": repo_id} for repo_id in repository_ids])
+        .on_conflict_do_nothing(index_elements=["user_id", "repository_id"])
     )
 
 
@@ -52,9 +72,7 @@ def sync_user_repositories(db: Session, user: User, client: GitHubClient) -> lis
 
     # Flush so new rows carry their database-generated ids before linking
     db.flush()
-    for repo in synced:
-        if repo.id not in linked:
-            db.add(UserRepository(user_id=user.id, repository_id=repo.id))
+    link_repositories(db, user, [repo.id for repo in synced if repo.id not in linked])
     db.commit()
     return list_user_repositories(db, user)
 

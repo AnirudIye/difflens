@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
+import { STATUS_LABEL } from "@/lib/findings";
 import { relativeTime } from "@/lib/time";
 import type { PullRequest, RepositoryDetail, Review } from "@/lib/types";
 import { useMe } from "@/lib/useMe";
@@ -213,7 +214,7 @@ export default function RepositoryPullsPage() {
               className="pr-title"
               href={`/reviews/${state.repo.latest_repo_review.id}`}
             >
-              {state.repo.latest_repo_review.status} at{" "}
+              {STATUS_LABEL[state.repo.latest_repo_review.status]} at{" "}
               <span className="mono">
                 {state.repo.latest_repo_review.head_sha.slice(0, 7)}
               </span>

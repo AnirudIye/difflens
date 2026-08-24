@@ -13,19 +13,22 @@ export default function DashboardPage() {
     <div className="shell">
       <Header me={me} onSignOut={signOut} />
       <main className="dash">
+        <h1 className="page-title">Dashboard</h1>
         {me.kind === "loading" ? (
           <p className="muted">Checking your session...</p>
         ) : me.kind === "authed" ? (
           <>
             <p className="signed-in">
-              {/* eslint-disable-next-line @next/next/no-img-element -- avatars come from GitHub's CDN, no image loader configured */}
-              <img
-                className="avatar"
-                src={me.me.avatar_url}
-                alt=""
-                width={40}
-                height={40}
-              />
+              {me.me.avatar_url ? (
+                /* eslint-disable-next-line @next/next/no-img-element -- avatars come from GitHub's CDN, no image loader configured */
+                <img
+                  className="avatar"
+                  src={me.me.avatar_url}
+                  alt=""
+                  width={40}
+                  height={40}
+                />
+              ) : null}
               Signed in as {me.me.login}
             </p>
             <Link className="button" href="/repositories">

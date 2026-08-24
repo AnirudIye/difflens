@@ -146,13 +146,25 @@ def populate_workspace(
 
 
 def _persist_success(
-    db: Session, job: ReviewJob, review: Review, result: ReviewResult, worker_id: str, mode: str
+    db: Session,
+    job: ReviewJob,
+    review: Review,
+    result: ReviewResult,
+    worker_id: str,
+    mode: str,
+    ai_source: str = "server",
 ) -> bool:
     """Persist findings and the terminal transition, fenced on ownership.
 
     The job UPDATE is the gate: if the sweep reclaimed this job while we were
     analyzing, it matches zero rows and everything (findings included) rolls
     back, leaving the current owner's run untouched.
+
+    `cancel_requested` is part of the same gate. Someone who pressed Cancel
+    was promised the review stops and keeps nothing, and the analysis stages
+    can only notice a cancel at their own boundaries; a cancel arriving after
+    the last checkpoint would otherwise be overwritten by the result that was
+    already in flight, completing a review the caller was told was stopping.
     """
     now = jobs._now()
     won = db.execute(
@@ -161,6 +173,7 @@ def _persist_success(
             ReviewJob.id == job.id,
             ReviewJob.status == "running",
             ReviewJob.locked_by == worker_id,
+            ReviewJob.cancel_requested.is_(False),
         )
         .values(status="completed", finished_at=now)
         .returning(ReviewJob.id)
@@ -195,6 +208,10 @@ def _persist_success(
             (stats.ai_parse_failed, "ai_parse_failed"),
             (stats.ai_truncated, "ai_truncated"),
             (stats.ai_skipped, f"ai_skipped={stats.ai_skipped}"),
+            (
+                stats.ai_config_failed,
+                f"ai_failed={'user_key' if ai_source == 'user' else 'server'}",
+            ),
             (stats.truncated, "findings_truncated"),
             (
                 stats.analyzers_skipped,
@@ -331,12 +348,12 @@ def _run_repository_review(
             client.download_tarball(repository.full_name, review.head_sha, tar_path)
             if outcome := _checkpoint(db, job, worker_id):
                 return outcome
-            extract_snapshot(tar_path, workspace)
+            snapshot_stats = extract_snapshot(tar_path, workspace)
             # The tarball is spent; reclaim the disk before analyzers run
             tar_path.unlink()
             if outcome := _checkpoint(db, job, worker_id):
                 return outcome
-            return run_review(
+            result = run_review(
                 AnalysisJob(
                     repo_full_name=repository.full_name,
                     base_sha=None,
@@ -347,11 +364,19 @@ def _run_repository_review(
                     target="repository",
                     ai_chunk_cap=chunk_cap,
                     ai_cap_reason=cap_reason,
+                    ai_source=ai_source,  # type: ignore[arg-type]  # factory returns user|server
                 ),
                 provider=ai_provider,
                 stop_check=lambda: _checkpoint(db, job, worker_id),
                 ai_config_errors=AI_CONFIG_ERRORS,
             )
+            # Files dropped at extraction never reached the workspace, so the
+            # AI stage never counted them. Folding them into the total keeps
+            # the coverage sentence from claiming a repository was fully read
+            # when part of it was left in the tarball.
+            result.stats.ai_files_total += snapshot_stats.files_skipped_large
+            result.stats.ai_files_skipped_large += snapshot_stats.files_skipped_large
+            return result
 
 
 def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
@@ -460,8 +485,10 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                                 diff_text=diff_text,
                                 workspace=workspace,
                                 mode=mode,  # type: ignore[arg-type]  # factory returns a valid mode
+                                ai_source=ai_source,  # type: ignore[arg-type]
                             ),
                             provider=ai_provider,
+                            ai_config_errors=AI_CONFIG_ERRORS,
                         )
 
         stats = result.stats
@@ -475,7 +502,13 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                 truncated=stats.ai_truncated,
                 skipped=stats.ai_skipped,
             )
-        if not _persist_success(db, job, review, result, worker_id, mode):
+        # Last gate before the result lands. The pull request path runs its
+        # whole AI call between checkpoints, so this is the first chance to
+        # see a cancel that arrived during analysis.
+        if outcome := _checkpoint(db, job, worker_id):
+            log.info("review_result_discarded", outcome=outcome)
+            return outcome
+        if not _persist_success(db, job, review, result, worker_id, mode, ai_source):
             log.warning("review_result_discarded_ownership_lost")
             return "lost"
         log.info("review_completed", findings=len(result.findings))

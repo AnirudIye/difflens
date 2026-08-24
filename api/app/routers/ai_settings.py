@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from app.deps import CurrentUser, DbSession
 from app.models import UserAIKey
 from app.security import decrypt_token, encrypt_token
+from app.text_input import strip_nul
 
 router = APIRouter(prefix="/settings")
 
@@ -27,7 +28,15 @@ class PutAIKeyRequest(BaseModel):
     @field_validator("api_key", mode="before")
     @classmethod
     def _strip(cls, value: object) -> object:
+        value = strip_nul(value)
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _clean_model(cls, value: object) -> object:
+        # NUL-free before the length check, so a crafted model name cannot
+        # reach the text column and fail the insert
+        return strip_nul(value)
 
     @field_validator("model")
     @classmethod

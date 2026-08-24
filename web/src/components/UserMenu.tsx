@@ -38,11 +38,22 @@ export default function UserMenu({
       }
     }
 
+    function onFocusIn(event: FocusEvent) {
+      // Tabbing past the last item moves focus out of the menu but left it
+      // open, and an open menu covers whatever comes next in the tab order.
+      // A keyboard user then tabs into something they cannot see.
+      if (!wrapper.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
     };
   }, [open]);
 
@@ -58,14 +69,16 @@ export default function UserMenu({
       >
         {user ? (
           <>
-            {/* eslint-disable-next-line @next/next/no-img-element -- avatars come from GitHub's CDN, no image loader configured */}
-            <img
-              className="avatar"
-              src={user.avatar_url}
-              alt=""
-              width={24}
-              height={24}
-            />
+            {user.avatar_url ? (
+              /* eslint-disable-next-line @next/next/no-img-element -- avatars come from GitHub's CDN, no image loader configured */
+              <img
+                className="avatar"
+                src={user.avatar_url}
+                alt=""
+                width={24}
+                height={24}
+              />
+            ) : null}
             <span className="menu-label">{user.login}</span>
           </>
         ) : (

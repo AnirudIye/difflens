@@ -27,6 +27,7 @@ from app.deps import DbSession
 from app.models import ContactMessage
 from app.rate_limit import ContactRateLimit
 from app.services import contact_forward
+from app.text_input import strip_nul
 
 log = structlog.get_logger()
 
@@ -50,12 +51,14 @@ class ContactRequest(BaseModel):
     @classmethod
     def _strip_message(cls, value: object) -> object:
         # Stripped before validation so min_length refuses a message that
-        # was only whitespace
+        # was only whitespace, and NUL-free so the insert cannot fail
+        value = strip_nul(value)
         return value.strip() if isinstance(value, str) else value
 
     @field_validator("name", "email", "subject", mode="before")
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
+        value = strip_nul(value)
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None

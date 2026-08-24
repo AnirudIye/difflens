@@ -11,6 +11,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import structlog
+
 from app.analysis.ai_review import (
     DEMO_AI_MODEL,
     FINDINGS_SCHEMA,
@@ -31,6 +33,8 @@ from app.analysis.diffs.parser import DiffIndex, build_diff_index
 from app.analysis.diffs.snapshot import build_snapshot_index
 from app.analysis.models import Finding, ReviewJob, ReviewResult, ReviewStats
 from app.analysis.repo_review import run_repo_ai_stage
+
+log = structlog.get_logger()
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 
@@ -60,8 +64,18 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def _summarize(findings: list[Finding], target: str = "pull_request") -> str:
+def _summarize(
+    findings: list[Finding], target: str = "pull_request", ran_any_analyzer: bool = True
+) -> str:
     if not findings:
+        if not ran_any_analyzer:
+            # Zero findings because nothing ran is not a clean result, and
+            # saying "passes all checks" when no check completed is the most
+            # dangerous sentence this product could print.
+            return (
+                "No findings, but no analyzer finished, so nothing was actually "
+                "checked. Run the review again."
+            )
         if target == "repository":
             return "No findings. This repository came back clean at this commit."
         return "No findings. The changed code passes all deterministic checks."
@@ -123,9 +137,27 @@ def _run_ai_stage(
     return findings
 
 
-def _ai_note(stats: ReviewStats) -> str | None:
+def _config_failure_note(ai_source: str) -> str:
+    """Names the failure and the one person who can clear it."""
+    if ai_source == "user":
+        return (
+            "Your AI key was rejected, so only the deterministic checks ran. "
+            "Check the key in Settings and run the review again."
+        )
+    return (
+        "The AI reviewer is misconfigured, so only the deterministic checks "
+        "ran. This one is for the operator to fix, not you."
+    )
+
+
+def _ai_note(stats: ReviewStats, ai_source: str = "server") -> str | None:
     """One honest sentence when the AI stage degraded; the user must be able
     to tell a clean AI pass from a suppressed one."""
+    if stats.ai_config_failed:
+        # First: a rejected key explains every other symptom below it, and
+        # saying "no AI reviewer is configured" to someone who configured one
+        # sends them to the wrong place
+        return _config_failure_note(ai_source)
     if stats.ai_skipped == "diff_too_large":
         return "This diff is too large for the AI reviewer; only deterministic checks ran."
     if stats.ai_refused:
@@ -153,8 +185,10 @@ def _ai_note(stats: ReviewStats) -> str | None:
     return None
 
 
-def _repo_ai_note(stats: ReviewStats) -> str | None:
+def _repo_ai_note(stats: ReviewStats, ai_source: str = "server") -> str | None:
     """Honest coverage sentences for a repository snapshot's AI stage."""
+    if stats.ai_config_failed:
+        return _config_failure_note(ai_source)
     if stats.ai_model == "mock":
         # The mock never fails a chunk, so unlike _ai_note this check can
         # come first: there is no specific failure for it to shadow
@@ -226,19 +260,30 @@ def run_review(
 
     if job.mode != "deterministic_only" and provider is not None:
         with _timed(stats, "ai"):
-            if snapshot:
-                findings.extend(
-                    run_repo_ai_stage(
-                        job,
-                        provider,
-                        index,
-                        stats,
-                        stop_check=stop_check,
-                        config_errors=ai_config_errors,
+            try:
+                if snapshot:
+                    findings.extend(
+                        run_repo_ai_stage(
+                            job,
+                            provider,
+                            index,
+                            stats,
+                            stop_check=stop_check,
+                            config_errors=ai_config_errors,
+                        )
                     )
-                )
-            else:
-                findings.extend(_run_ai_stage(job, provider, index, job.workspace, stats))
+                else:
+                    findings.extend(_run_ai_stage(job, provider, index, job.workspace, stats))
+            except ai_config_errors as exc:
+                # A rejected key or a bad model id is permanent, but it is not
+                # a reason to throw away a review. The analyzers have already
+                # run, and their findings are exactly as valid as they were a
+                # moment ago; discarding them would hand someone with a stale
+                # key nothing at all, when the product has a first-class state
+                # for "the AI half did not run". The summary says what
+                # happened and who has to fix it.
+                stats.ai_config_failed = True
+                log.warning("ai_stage_config_error", error=f"{type(exc).__name__}: {exc}")
     stats.findings_before_dedup = len(findings)
 
     with _timed(stats, "dedup"):
@@ -246,10 +291,12 @@ def run_review(
     stats.findings_after_dedup = len(findings)
 
     with _timed(stats, "summarize"):
-        summary = _summarize(findings, job.target)
+        summary = _summarize(findings, job.target, ran_any_analyzer=bool(stats.analyzers_run))
         notes: list[str] = []
         if job.mode != "deterministic_only":
-            note = _repo_ai_note(stats) if snapshot else _ai_note(stats)
+            note = (
+                _repo_ai_note(stats, job.ai_source) if snapshot else _ai_note(stats, job.ai_source)
+            )
             if note:
                 notes.append(note)
         if stats.truncated:

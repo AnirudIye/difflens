@@ -2,7 +2,7 @@ export type Me = {
   id: string;
   login: string;
   name: string | null;
-  avatar_url: string;
+  avatar_url: string | null;
   github_connected: boolean;
 };
 
@@ -101,6 +101,11 @@ export type Review = {
   // only "diff_too_large"). Null covers both a real AI pass and no AI at
   // all, which ai_model tells apart.
   ai_skipped: string | null;
+  // "config" when the AI provider rejected the request outright (bad key or
+  // bad model id). The review still carries its deterministic findings.
+  ai_failed: "user_key" | "server" | null;
+  // How many AI passes failed outright on a repository review
+  ai_chunks_failed: number;
   // Repository snapshots: how many reviewable files the AI actually read
   ai_coverage: { files_covered: number; files_total: number } | null;
   // "keyless" when the keyless tier's chunk cap cut AI coverage

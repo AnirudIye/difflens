@@ -106,3 +106,40 @@ def test_ordinary_http_errors_still_use_the_same_envelope(client, make_user_with
     error = response.json()["error"]
     assert error["code"] == "not_found"
     assert error["request_id"]
+
+
+def test_an_unexpected_exception_still_answers_in_the_envelope(
+    client, monkeypatch, make_user_with_session
+):
+    """Only RequestValidationError and HTTPException had handlers, so anything
+    unforeseen returned Starlette's bare text/plain 500 with no request id and
+    no nosniff header. The frontend reads error.code off every failure, so
+    that response is one it cannot describe to the user at all."""
+    from app.services import repo_service
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("something nobody predicted")
+
+    _user, token = make_user_with_session("envelope")
+    # Looked up on the module at call time, so patching it reaches the route
+    monkeypatch.setattr(repo_service, "list_user_repositories", boom)
+
+    # raise_server_exceptions=False so the handler's response is returned
+    # rather than the exception being re-raised into the test, which is what
+    # a real client over HTTP sees
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as raw:
+        raw.cookies.set("session", token)
+        response = raw.get("/repositories?sync=false")
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.headers.get("x-content-type-options") == "nosniff"
+    body = response.json()
+    assert body["error"]["code"] == "internal_error"
+    assert body["error"]["request_id"]
+    # The exception text can carry anything the request contained
+    assert "something nobody predicted" not in response.text

@@ -8,7 +8,7 @@ import uuid
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app import queue
 from app.models import PullRequest, Repository, Review, ReviewJob, UserRepository
@@ -607,3 +607,36 @@ def test_repo_rerun_refuses_while_the_review_is_live(client, db, github, synced_
     db.refresh(review)
     assert review.status == "running"
     assert len(db.execute(select(Review.id)).all()) == 1
+
+
+def test_rerunning_a_superseded_review_points_at_its_replacement(client, synced_pr, doorbell, db):
+    """A superseded review has finished in every sense a caller cares about.
+    Leaving it out of the terminal statuses told anyone rerunning one that it
+    "has not finished yet", which is the opposite of what happened to it."""
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)})
+    assert first.status_code == 201
+    review_id = first.json()["id"]
+    db.execute(update(Review).where(Review.id == review_id).values(status="superseded"))
+    db.commit()
+
+    again = client.post(f"/reviews/{review_id}/rerun")
+
+    # Either it starts a fresh review or it names the one that replaced it,
+    # but it never claims the replaced review is still running
+    assert again.status_code in (201, 409)
+    if again.status_code == 409:
+        assert again.json()["error"]["code"] == "review_already_exists"
+
+
+def test_cancelling_a_superseded_review_is_refused(client, synced_pr, doorbell, db):
+    _user, pr = synced_pr
+    first = client.post("/reviews", json={"pull_request_id": str(pr.id)})
+    review_id = first.json()["id"]
+    db.execute(update(Review).where(Review.id == review_id).values(status="superseded"))
+    db.commit()
+
+    response = client.post(f"/reviews/{review_id}/cancel")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "review_finished"

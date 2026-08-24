@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from app import queue
 from app.models import Finding, ProviderConnection, Review, ReviewJob
@@ -540,9 +540,12 @@ def test_process_job_retries_when_the_ai_provider_errors(db, github, review_and_
     assert "RuntimeError" in job.error_detail
 
 
-def test_process_job_fails_permanently_on_anthropic_auth_error(
+def test_a_rejected_server_key_keeps_the_deterministic_findings(
     db, github, review_and_job, monkeypatch
 ):
+    """A provider that rejects the request must not cost the user the
+    analyzer findings that were already computed. The review completes,
+    says what happened, and blames the operator rather than the caller."""
     import anthropic
 
     review, job = review_and_job
@@ -562,12 +565,18 @@ def test_process_job_fails_permanently_on_anthropic_auth_error(
 
     outcome = runner.process_job(db, job.id, "w1")
 
-    assert outcome == "failed"
+    assert outcome == "completed"
     db.refresh(job)
     db.refresh(review)
-    assert job.status == "failed"
-    assert job.attempts == 1  # a revoked key burns no retries
-    assert "misconfigured" in review.error_user_message.lower()
+    assert job.status == "completed"
+    assert review.status == "completed"
+    assert review.error_user_message is None
+    # The whole point: the analyzers had already run, so their findings live
+    assert review.findings_count > 0
+    assert "ai_failed=server" in review.pipeline_version
+    summary = review.summary.lower()
+    assert "misconfigured" in summary
+    assert "operator" in summary  # not the caller's key, so not the caller's problem
 
 
 def test_process_job_uses_the_review_authors_own_key(db, github, review_and_job, monkeypatch):
@@ -620,7 +629,9 @@ def test_process_job_tells_the_user_when_their_key_is_unreadable(db, github, rev
     assert "your ai api key" in review.error_user_message.lower()
 
 
-def test_process_job_blames_the_users_key_when_it_fails(db, github, review_and_job, monkeypatch):
+def test_a_rejected_user_key_keeps_findings_and_blames_the_user(
+    db, github, review_and_job, monkeypatch
+):
     from app import security
     from app.ai.errors import AIProviderConfigError
     from app.ai.gemini_provider import GeminiProvider
@@ -644,11 +655,14 @@ def test_process_job_blames_the_users_key_when_it_fails(db, github, review_and_j
 
     outcome = runner.process_job(db, job.id, "w1")
 
-    assert outcome == "failed"
+    assert outcome == "completed"
     db.refresh(job)
     db.refresh(review)
-    assert job.attempts == 1  # no retries burned on a bad user key
-    assert "your ai api key" in review.error_user_message.lower()
+    assert review.findings_count > 0  # the deterministic half survives
+    assert "ai_failed=user_key" in review.pipeline_version
+    summary = review.summary.lower()
+    assert "your ai key was rejected" in summary
+    assert "settings" in summary  # the one place they can fix it
 
 
 def test_process_job_persists_validated_ai_findings(db, github, review_and_job, monkeypatch):
@@ -926,3 +940,40 @@ def test_truncation_and_analyzer_skip_markers_persist(db, github, repo_review_an
     markers = review.pipeline_version.split()
     assert "findings_truncated" in markers
     assert "analyzers_skipped=eslint,ruff" in markers  # sorted, comma-joined
+
+
+def test_a_cancel_during_analysis_is_not_overwritten_by_the_result(
+    db, github, review_and_job, monkeypatch
+):
+    """cancel_review promises the worker's checkpoint finishes the job. The
+    pull request path runs its whole AI call between checkpoints, so a cancel
+    arriving during analysis used to be overwritten by the result already in
+    flight: the review completed, kept its findings, and the caller who
+    pressed Cancel was told it had stopped."""
+    from app.analysis.models import ReviewJob as AnalysisJob  # noqa: F401
+
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+
+    real_run_review = runner.run_review
+
+    def cancel_midway(*args, **kwargs):
+        # Stand in for the caller pressing Cancel while the analysis runs
+        db.execute(update(ReviewJob).where(ReviewJob.id == job.id).values(cancel_requested=True))
+        db.commit()
+        return real_run_review(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "run_review", cancel_midway)
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "cancelled"
+    db.refresh(job)
+    db.refresh(review)
+    assert review.status == "cancelled"
+    assert (
+        db.execute(
+            select(func.count()).select_from(Finding).where(Finding.review_id == review.id)
+        ).scalar()
+        == 0
+    )

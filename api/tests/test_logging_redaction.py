@@ -131,3 +131,49 @@ def test_a_traceback_carrying_a_secret_is_redacted_before_it_is_written():
     assert "RuntimeError" in written, "the traceback must survive"
     assert GOOGLE_KEY not in written
     assert REDACTED in written
+
+
+def test_stdlib_access_logs_are_scrubbed_too():
+    """The redaction processor is a structlog processor, so it never sees a
+    line uvicorn's access logger writes. That logger prints the full request
+    line, and the OAuth callback carries the authorization code in its query
+    string, so the code landed in the log verbatim."""
+    import io
+    import logging
+
+    from app.logging_setup import setup_logging
+
+    setup_logging("development")
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    access = logging.getLogger("uvicorn.access")
+    access.addHandler(handler)
+    access.setLevel(logging.INFO)
+    access.propagate = False
+    # Alembic's fileConfig runs during the test-database fixture and disables
+    # every existing logger, which would empty the buffer and let the two
+    # assertions below pass while proving nothing. Re-enable for the duration
+    # and put it back. Unrelated to production, where setup_logging runs after
+    # uvicorn has configured its own logging.
+    was_disabled = logging.root.manager.disable
+    was_logger_disabled = access.disabled
+    logging.disable(logging.NOTSET)
+    access.disabled = False
+    try:
+        access.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "127.0.0.1:1234",
+            "GET",
+            "/auth/github/callback?code=gho_SUPERSECRET1234567890abcdef&state=deadbeefstate",
+            "1.1",
+            302,
+        )
+    finally:
+        logging.disable(was_disabled)
+        access.disabled = was_logger_disabled
+        access.removeHandler(handler)
+
+    written = buffer.getvalue()
+    assert "gho_SUPERSECRET1234567890abcdef" not in written
+    assert "deadbeefstate" not in written
+    assert "/auth/github/callback" in written  # the path itself is still useful

@@ -47,6 +47,8 @@ class ReviewJob(BaseModel):
     # supplied the AI key; the pipeline stays policy-free and just obeys it.
     ai_chunk_cap: int | None = None
     ai_cap_reason: Literal["keyless"] | None = None
+    # Whose key pays, so a provider rejection blames the party who can fix it
+    ai_source: Literal["user", "server"] = "server"
 
 
 class ReviewStats(BaseModel):
@@ -63,6 +65,10 @@ class ReviewStats(BaseModel):
     ai_parse_failed: bool = False
     ai_truncated: bool = False
     ai_skipped: str | None = None  # e.g. "diff_too_large"
+    # The provider rejected the request in a way no retry fixes (bad key, bad
+    # model id). Recorded rather than raised, so the deterministic findings
+    # that were already computed still reach the user.
+    ai_config_failed: bool = False
     ai_candidates: int = 0
     ai_discarded: dict[str, int] = {}
     # Repository snapshots: how much of the repo the AI actually read

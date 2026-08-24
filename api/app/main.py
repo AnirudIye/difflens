@@ -125,6 +125,38 @@ def create_app() -> FastAPI:
             headers=exc.headers,
         )
 
+    @app.exception_handler(Exception)
+    async def unhandled_envelope(request: Request, exc: Exception) -> JSONResponse:
+        """Anything nobody predicted, in the same envelope as everything else.
+
+        Without this, Starlette answers an unexpected exception with a bare
+        text/plain "Internal Server Error" that carries neither the request id
+        nor the nosniff header, because the middleware sets both only after
+        `await call_next` returns and an exception never gets there. The
+        frontend reads `error.code` off every failure, so a raw 500 is a
+        response it cannot describe to the user at all. One crafted character
+        in a public form was enough to produce one.
+
+        The exception itself is logged, not returned: the message can carry
+        anything the request contained.
+        """
+        log.exception("unhandled_exception", path=request.url.path, method=request.method)
+        request_id = getattr(request.state, "request_id", None)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "Something went wrong on our side. Try again.",
+                    "request_id": request_id,
+                }
+            },
+            headers={
+                "X-Request-ID": request_id or "",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(repositories.router)

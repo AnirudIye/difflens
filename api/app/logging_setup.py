@@ -11,8 +11,15 @@ Redaction happens on two axes, because either alone leaves a hole:
 - by value shape, for secrets that arrive inside a string nobody inspected,
   which is how they actually escape - ``error="AuthError: 401 for
   https://host/v1?key=AIza..."`` has no suspicious key name anywhere.
+
+Both axes are structlog processors, so they only see what the app logs
+through structlog. Libraries that log through the standard library bypass
+them entirely, and uvicorn's access logger is exactly that: it writes the
+full request line, query string included, so a GET carrying an OAuth code
+would land in the log verbatim. `_ScrubFilter` closes that path.
 """
 
+import logging
 import re
 
 import structlog
@@ -109,3 +116,37 @@ def setup_logging(environment: str) -> None:
             renderer,
         ]
     )
+    _install_stdlib_scrubbing()
+
+
+class _ScrubFilter(logging.Filter):
+    """Run the same value-shape redaction over standard-library log records.
+
+    Attached to the loggers rather than to a handler on purpose: uvicorn
+    installs its own handlers when it starts, which may be after this runs,
+    but the logger objects are reachable by name at any time and a filter on
+    the logger runs before the record reaches any handler.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = scrub(record.msg)
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {
+                    key: scrub(value) if isinstance(value, str) else value
+                    for key, value in record.args.items()
+                }
+            else:
+                record.args = tuple(
+                    scrub(value) if isinstance(value, str) else value for value in record.args
+                )
+        return True
+
+
+def _install_stdlib_scrubbing() -> None:
+    scrubber = _ScrubFilter()
+    for name in ("", "uvicorn", "uvicorn.access", "uvicorn.error"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(existing, _ScrubFilter) for existing in logger.filters):
+            logger.addFilter(scrubber)

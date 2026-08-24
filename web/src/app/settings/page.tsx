@@ -102,7 +102,13 @@ export default function SettingsPage() {
       });
       setStatus(data);
       setApiKey("");
-      setMessage("Saved. Reviews you start now run on your key.");
+      // Deliberately not "your key works": nothing here calls the provider,
+      // so the first review is what actually tests it. Saying so beats
+      // presenting an untested key as healthy.
+      setMessage(
+        "Saved. Reviews you start now use your key. If the provider rejects " +
+          "it, the review will say so.",
+      );
     } catch (err) {
       if (expired(err)) {
         return;
@@ -246,7 +252,13 @@ export default function SettingsPage() {
                 Save key
               </button>
               {message ? (
-                <p className="muted">{message}</p>
+                // A live region, because saving and removing both leave the
+                // page looking identical apart from this sentence. Without
+                // it a screen reader user gets no confirmation that anything
+                // happened at all.
+                <p className="muted" role="status" aria-live="polite">
+                  {message}
+                </p>
               ) : typed && tooShort ? (
                 // Without this the button is simply dead and never says why,
                 // which is exactly what a half-pasted key looks like

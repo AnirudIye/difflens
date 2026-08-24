@@ -5,22 +5,18 @@ import Link from "next/link";
 import FindingCard from "@/components/FindingCard";
 import Header from "@/components/Header";
 import { ApiError, apiFetch } from "@/lib/api";
-import { groupByFile, isReplayedAI, severitySummary } from "@/lib/findings";
+import {
+  groupByFile,
+  isReplayedAI,
+  severitySummary,
+  STATUS_LABEL,
+} from "@/lib/findings";
 import { relativeTime } from "@/lib/time";
 import type { Review, ReviewStatus } from "@/lib/types";
 
 const POLL_MS = 2500;
 // Render's free tier wakes in 30-60s; past ~2.5 minutes something is wrong
 const MAX_WAKE_POLLS = 60;
-
-const STATUS_LABEL: Record<ReviewStatus, string> = {
-  queued: "Queued",
-  running: "Analyzing",
-  completed: "Done",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  superseded: "Replaced by a newer run",
-};
 
 type LoadState =
   | { kind: "loading" }

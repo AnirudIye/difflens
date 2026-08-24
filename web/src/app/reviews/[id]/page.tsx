@@ -11,6 +11,7 @@ import {
   groupByFile,
   hasRealAI,
   severitySummary,
+  STATUS_LABEL,
 } from "@/lib/findings";
 import { relativeTime } from "@/lib/time";
 import type {
@@ -25,15 +26,6 @@ import { useSignOut } from "@/lib/useSignOut";
 const POLL_MS = 2500;
 // Render's free tier wakes in 30-60s; past ~2.5 minutes something is wrong
 const MAX_WAKE_POLLS = 60;
-
-const STATUS_LABEL: Record<ReviewStatus, string> = {
-  queued: "Queued",
-  running: "Analyzing",
-  completed: "Done",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  superseded: "Replaced by a newer review",
-};
 
 type LoadState =
   | { kind: "loading" }
@@ -570,7 +562,29 @@ function ReviewBody({
           {review.summary ? (
             <p className="review-summary">{review.summary}</p>
           ) : null}
-          {review.ai_skipped === "diff_too_large" ? (
+          {review.ai_failed === "user_key" ? (
+            // Their key, their fix. Said first, because it explains every
+            // other AI symptom on the page and sends them somewhere useful.
+            <div className="notice ai-notice" role="status">
+              <p>
+                Your AI key was rejected, so these findings come from the
+                deterministic analyzers alone. Check the key in Settings and
+                run the review again.
+              </p>
+              <Link className="button button-quiet" href="/settings">
+                Check your API key
+              </Link>
+            </div>
+          ) : review.ai_failed === "server" ? (
+            // Not their key and not their problem, so no Settings button
+            <div className="notice ai-notice" role="status">
+              <p>
+                The AI reviewer is misconfigured, so these findings come from
+                the deterministic analyzers alone. This one is for the
+                operator to fix.
+              </p>
+            </div>
+          ) : review.ai_skipped === "diff_too_large" ? (
             // A key would not have helped: the pipeline refused the diff, not
             // the provider. Offering Settings here is wrong advice.
             <div className="notice ai-notice" role="status">
@@ -578,6 +592,20 @@ function ReviewBody({
                 This diff was too large to send to the AI reviewer, so these
                 findings come from the deterministic analyzers alone. A
                 smaller pull request gets the full review.
+              </p>
+            </div>
+          ) : review.ai_chunks_failed > 0 ? (
+            // Checked before the cap: an outage that stopped every pass would
+            // otherwise be dressed up as the free tier's coverage limit, and
+            // the page would sell an API key as the cure for a provider being
+            // down.
+            <div className="notice ai-notice" role="status">
+              <p>
+                The AI reviewer could not finish {review.ai_chunks_failed}{" "}
+                {review.ai_chunks_failed === 1 ? "pass" : "passes"} over this
+                repository, so its findings are incomplete. The deterministic
+                analyzers checked every reviewable file. Running the review
+                again usually clears it.
               </p>
             </div>
           ) : review.ai_capped === "keyless" && review.ai_coverage ? (
@@ -666,9 +694,9 @@ function ReviewBody({
                 />
               </svg>
               <p>
-                {pull
-                  ? "No findings. This diff came back clean."
-                  : "No findings. This repository came back clean at this commit."}
+                {review.analyzers_skipped && review.analyzers_skipped.length > 0
+                  ? "Nothing to show. Some checks did not finish, so this is not a clean result."
+                  : "Nothing to report."}
               </p>
             </div>
           ) : (
