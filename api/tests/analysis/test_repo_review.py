@@ -416,8 +416,9 @@ def test_truncated_findings_get_the_cap_sentence(tmp_path, monkeypatch):
 
     assert MAX_FINDINGS == 100
     assert (
-        f"More than {MAX_FINDINGS} findings were found; only the "
-        f"{MAX_FINDINGS} most severe are shown." in result.summary
+        f"More than {MAX_FINDINGS} findings were found; the "
+        f"{MAX_FINDINGS} shown are the most severe, spread across rules "
+        "and files so no single one crowds out the rest." in result.summary
     )
 
 

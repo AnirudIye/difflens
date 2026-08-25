@@ -245,18 +245,21 @@ def run_review(
             # No TestDetector: "changed logic without changed tests" is
             # meaningless when everything counts as changed, and it would
             # false-positive on every repository without a test file
+            secrets = SecretsAnalyzer()
             analyzers = [
                 RuffAnalyzer(timeout_s=REPO_RUFF_TIMEOUT_S),
-                SecretsAnalyzer(),
+                secrets,
                 ESLintAnalyzer(timeout_s=REPO_ESLINT_TIMEOUT_S),
             ]
             timeout_s = REPO_ANALYZER_TIMEOUT_S
         else:
-            analyzers = [RuffAnalyzer(), SecretsAnalyzer(), TestDetector(), ESLintAnalyzer()]
+            secrets = SecretsAnalyzer()
+            analyzers = [RuffAnalyzer(), secrets, TestDetector(), ESLintAnalyzer()]
             timeout_s = 60
         findings, stats.analyzers_run, stats.analyzers_skipped = run_analyzers(
             analyzers, job.workspace, index, timeout_s=timeout_s
         )
+        stats.secrets_suppressed = secrets.suppressed
 
     if job.mode != "deterministic_only" and provider is not None:
         with _timed(stats, "ai"):
@@ -305,12 +308,21 @@ def run_review(
                 "reviewed: GitHub returned no diff for it, or it was too large "
                 "to fetch."
             )
+        if stats.secrets_suppressed:
+            notes.append(
+                f"{stats.secrets_suppressed} credential-shaped "
+                f"{'match' if stats.secrets_suppressed == 1 else 'matches'} in test, "
+                "fixture and example files were not shown; those files exist to hold "
+                "values that look like credentials. Real key formats are still reported "
+                "wherever they appear."
+            )
         if stats.truncated:
             # Computed since day one and never surfaced; at repository scale
             # hitting the cap is routine rather than exotic, so it speaks now
             notes.append(
-                f"More than {MAX_FINDINGS} findings were found; only the "
-                f"{MAX_FINDINGS} most severe are shown."
+                f"More than {MAX_FINDINGS} findings were found; the "
+                f"{MAX_FINDINGS} shown are the most severe, spread across rules "
+                "and files so no single one crowds out the rest."
             )
         for note in notes:
             # The counts sentence has no full stop of its own, so without

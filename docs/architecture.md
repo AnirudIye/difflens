@@ -9,6 +9,7 @@ separately as ADRs in [adr/](adr/):
 - [0003](adr/0003-session-via-next-rewrite-proxy.md): The browser only ever talks to one origin
 - [0004](adr/0004-provider-abstraction-and-output-validation.md): Treat the AI provider and its output as untrusted
 - [0005](adr/0005-repository-snapshot-reviews.md): A repository snapshot is a review target, not a synthetic pull request
+- [0006](adr/0006-snapshot-precision.md): Precision at repository scale is a filter problem, not a tuning problem
 
 ## Requirements
 

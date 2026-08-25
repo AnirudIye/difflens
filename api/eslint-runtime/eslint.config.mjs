@@ -53,13 +53,20 @@ export default [
       "no-sparse-arrays": "error",
       "use-isnan": "error",
       "valid-typeof": "error",
-      "require-atomic-updates": "error",
+      // Off: the rule reports any assignment to a member of an object that
+      // was live across an await, which is what almost every async test
+      // helper and request handler does legitimately. Measured on a real
+      // repository it produced five findings and zero defects.
+      "require-atomic-updates": "off",
       "no-await-in-loop": "off", // often correct, and not a defect
       "no-fallthrough": "error",
       "no-cond-assign": ["error", "always"],
       "no-compare-neg-zero": "error",
       "no-async-promise-executor": "error",
-      "no-promise-executor-return": "error",
+      // Off: its dominant real-world trigger is the standard sleep idiom,
+      // new Promise((r) => setTimeout(r, ms)), where the returned timer id
+      // is harmless. Same repository: twenty-five findings, zero defects.
+      "no-promise-executor-return": "off",
       "no-unmodified-loop-condition": "error",
 
       // Security

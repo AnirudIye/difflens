@@ -63,6 +63,10 @@ class ReviewStats(BaseModel):
     findings_before_dedup: int = 0
     findings_after_dedup: int = 0
     truncated: bool = False
+    # Credential-shaped matches held back as expected noise: fixture
+    # passwords, placeholder connection strings, encoding alphabets. Reported
+    # to the reader as a count, never dropped in silence.
+    secrets_suppressed: int = 0
     tool_versions: dict[str, str] = {}
     # AI stage; all zero-valued when the mode is deterministic_only
     ai_model: str | None = None

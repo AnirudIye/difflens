@@ -6,6 +6,18 @@ from pathlib import Path
 from app.analysis.models import Finding
 
 MAX_FINDINGS = 100
+
+# One mechanical pattern must not be able to EVICT the rest. A repo review of
+# a real project once opened with fifty-six critical findings from a single
+# detector; because the report is cut at MAX_FINDINGS in severity order, a
+# noisy rule that calls itself critical can push every other finding below the
+# cut before it is ever considered. These bound how much of the FIRST pass any
+# one rule or file may take. Nothing is discarded for exceeding them: whatever
+# a cap holds back is offered again in the second pass, so a rule with a
+# hundred genuine hits still fills the report if nothing is competing for the
+# space.
+MAX_PER_RULE = 10
+MAX_PER_FILE = 15
 MERGE_LINE_PAD = 2
 # security and correctness overlap enough that cross-category merges are safe
 MERGEABLE_CATEGORIES = {"security", "correctness"}
@@ -145,4 +157,38 @@ def dedupe(findings: list[Finding], workspace: Path) -> tuple[list[Finding], boo
             target.confidence = ai_finding.confidence
 
     merged.sort(key=_sort_key)
-    return merged[:MAX_FINDINGS], len(merged) > MAX_FINDINGS
+    prioritized = prioritize(merged)
+    return prioritized[:MAX_FINDINGS], len(prioritized) > MAX_FINDINGS
+
+
+def prioritize(findings: list[Finding]) -> list[Finding]:
+    """Reorder so the head of the list is a diverse selection, not one rule.
+
+    This is an ordering, never a filter: every finding handed in comes back
+    out. The first pass takes up to MAX_PER_RULE and MAX_PER_FILE of each,
+    which guarantees that a flood from one detector cannot occupy the whole
+    budget; the second pass appends everything the caps held back, so a rule
+    with a hundred real hits still fills the report when nothing else wants
+    the room. Severity order is preserved inside each pass, and AI findings
+    skip the caps entirely: the caps exist to stop mechanical repetition, and
+    the AI half does not repeat.
+    """
+    per_rule: dict[tuple[str, str], int] = {}
+    per_file: dict[str, int] = {}
+    first: list[Finding] = []
+    held: list[Finding] = []
+    for finding in findings:
+        if finding.source != "deterministic":
+            first.append(finding)
+            continue
+        rule_key = (finding.tool or "", finding.rule_id or "")
+        if (
+            per_rule.get(rule_key, 0) >= MAX_PER_RULE
+            or per_file.get(finding.file_path, 0) >= MAX_PER_FILE
+        ):
+            held.append(finding)
+            continue
+        per_rule[rule_key] = per_rule.get(rule_key, 0) + 1
+        per_file[finding.file_path] = per_file.get(finding.file_path, 0) + 1
+        first.append(finding)
+    return first + held

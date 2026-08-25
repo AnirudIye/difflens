@@ -53,6 +53,7 @@ alternatives that lost and the costs that were accepted:
 - [003: The browser only ever talks to one origin](docs/adr/0003-session-via-next-rewrite-proxy.md) - the rewrite proxy, and the third-party cookie problem it avoids.
 - [004: Treat the AI provider and its output as untrusted](docs/adr/0004-provider-abstraction-and-output-validation.md) - the provider abstraction and the validation chain that discards hallucinated locations.
 - [005: A repository snapshot is a review target, not a synthetic pull request](docs/adr/0005-repository-snapshot-reviews.md) - the target union, the tarball ceilings that refuse rather than truncate, and the chunked AI tiers that keep a repository review from starving the shared key.
+- [006: Precision at repository scale is a filter problem, not a tuning problem](docs/adr/0006-snapshot-precision.md) - why reviewing a whole repository turned the deterministic analyzers into noise, and what replaced the filter that a diff used to provide.
 
 The frozen scope and the descope ladder are in [docs/SCOPE.md](docs/SCOPE.md), annotated in place
 where the sprint diverged from it.
