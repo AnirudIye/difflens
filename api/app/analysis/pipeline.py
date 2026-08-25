@@ -241,25 +241,25 @@ def run_review(
                 raise AnalysisError(f"could not parse diff: {exc}") from exc
 
     with _timed(stats, "analyze"):
+        secrets = SecretsAnalyzer()
         if snapshot:
             # No TestDetector: "changed logic without changed tests" is
             # meaningless when everything counts as changed, and it would
             # false-positive on every repository without a test file
-            secrets = SecretsAnalyzer()
-            analyzers = [
-                RuffAnalyzer(timeout_s=REPO_RUFF_TIMEOUT_S),
-                secrets,
-                ESLintAnalyzer(timeout_s=REPO_ESLINT_TIMEOUT_S),
-            ]
+            ruff = RuffAnalyzer(timeout_s=REPO_RUFF_TIMEOUT_S)
+            analyzers = [ruff, secrets, ESLintAnalyzer(timeout_s=REPO_ESLINT_TIMEOUT_S)]
             timeout_s = REPO_ANALYZER_TIMEOUT_S
         else:
-            secrets = SecretsAnalyzer()
-            analyzers = [RuffAnalyzer(), secrets, TestDetector(), ESLintAnalyzer()]
+            ruff = RuffAnalyzer()
+            analyzers = [ruff, secrets, TestDetector(), ESLintAnalyzer()]
             timeout_s = 60
         findings, stats.analyzers_run, stats.analyzers_skipped = run_analyzers(
             analyzers, job.workspace, index, timeout_s=timeout_s
         )
         stats.secrets_suppressed = secrets.suppressed
+        if ruff.used_repo_config:
+            stats.ruff_config_source = "repository"
+        stats.ruff_repo_config_failed = ruff.repo_config_failed
 
     if job.mode != "deterministic_only" and provider is not None:
         with _timed(stats, "ai"):
@@ -307,6 +307,16 @@ def run_review(
                 f"{_plural(job.files_not_reviewed, 'changed file')} could not be "
                 "reviewed: GitHub returned no diff for it, or it was too large "
                 "to fetch."
+            )
+        if stats.ruff_config_source == "repository":
+            # Whose rules produced the findings is part of the review's
+            # provenance; the reader must be able to tell our defaults from
+            # the repository's own standard
+            notes.append("ruff ran with the repository's own ruff configuration.")
+        if stats.ruff_repo_config_failed:
+            notes.append(
+                "The repository's ruff configuration could not be used; "
+                "ruff ran with DiffLens's default rules instead."
             )
         if stats.secrets_suppressed:
             notes.append(

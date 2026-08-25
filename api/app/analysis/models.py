@@ -67,6 +67,11 @@ class ReviewStats(BaseModel):
     # passwords, placeholder connection strings, encoding alphabets. Reported
     # to the reader as a count, never dropped in silence.
     secrets_suppressed: int = 0
+    # Whose ruff rules ran: the repository's own config when its root
+    # carries one, the bundled selection otherwise. The failed flag means a
+    # root config existed but would not run, so the bundled rules stood in.
+    ruff_config_source: Literal["bundled", "repository"] = "bundled"
+    ruff_repo_config_failed: bool = False
     tool_versions: dict[str, str] = {}
     # AI stage; all zero-valued when the mode is deterministic_only
     ai_model: str | None = None

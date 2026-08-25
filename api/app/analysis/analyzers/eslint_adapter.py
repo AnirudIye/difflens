@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app.analysis.analyzers.base import ANALYZER_ARGV_CHAR_CAP
+from app.analysis.analyzers.base import ANALYZER_ARGV_CHAR_CAP, child_env
 from app.analysis.analyzers.mappings import map_eslint
 from app.analysis.diffs.parser import DiffIndex
 from app.analysis.diffs.validator import is_reviewable, touches_change
@@ -135,6 +135,7 @@ class ESLintAnalyzer:
             encoding="utf-8",
             errors="replace",
             timeout=self.timeout_s,
+            env=child_env(),
         )
         # 0 clean, 1 lint problems found, 2 ESLint itself failed
         if result.returncode not in (0, 1):
