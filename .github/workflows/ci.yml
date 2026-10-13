@@ -131,7 +131,14 @@ jobs:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
+      # Pruning is off for this job only. It leaves uv-run servers alive (see
+      # the nohup step below), and the post-job `uv cache prune --ci` failed
+      # with exit 2 here after the browser test had passed, while the same
+      # step passes in jobs that run nothing in the background. Pruning only
+      # shrinks the saved cache, so skipping it is harmless.
       - uses: astral-sh/setup-uv@v5
+        with:
+          prune-cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
