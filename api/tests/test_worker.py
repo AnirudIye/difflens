@@ -266,6 +266,58 @@ def test_process_job_completes_end_to_end(db, github, review_and_job):
     assert review.severity_counts == by_severity
 
 
+def test_fetch_ruff_config_writes_only_what_exists(github, tmp_path):
+    from app.services.github_client import GitHubClient
+
+    github.contents[("ruff.toml", HEAD_SHA_41)] = b'[lint]\nselect = ["F401"]\n'
+
+    with GitHubClient("gho_test") as client:
+        runner.fetch_ruff_config(client, "octocat/alpha", HEAD_SHA_41, tmp_path)
+
+    assert (tmp_path / "ruff.toml").read_bytes() == b'[lint]\nselect = ["F401"]\n'
+    # the other two names 404 on the fake, which is the normal case, not an error
+    assert not (tmp_path / ".ruff.toml").exists()
+    assert not (tmp_path / "pyproject.toml").exists()
+
+
+def test_fetch_ruff_config_keeps_a_file_the_pr_already_wrote(github, tmp_path):
+    from app.services.github_client import GitHubClient
+
+    # A PR that touches the config already put the head-state copy in the
+    # workspace; fetching over it would waste a call to write the same bytes
+    (tmp_path / "ruff.toml").write_bytes(b"from-the-pr\n")
+    github.contents[("ruff.toml", HEAD_SHA_41)] = b"from-github\n"
+
+    with GitHubClient("gho_test") as client:
+        runner.fetch_ruff_config(client, "octocat/alpha", HEAD_SHA_41, tmp_path)
+
+    assert (tmp_path / "ruff.toml").read_bytes() == b"from-the-pr\n"
+
+
+def test_pr_review_honors_the_repositorys_ruff_config(db, github, review_and_job):
+    """A PR workspace holds only changed files, so the worker fetches the
+    repository's root ruff config at the pinned head and the repo's own rules
+    govern the ruff stage of a pull request review too."""
+    review, job = review_and_job
+    wire_fixture(github, "python_buggy")
+    github.contents[("ruff.toml", HEAD_SHA_41)] = b'[lint]\nselect = ["F401"]\n'
+
+    outcome = runner.process_job(db, job.id, "w1")
+
+    assert outcome == "completed"
+    db.refresh(review)
+    assert "ruff_config=repository" in review.pipeline_version.split()
+    assert "ruff ran with the repository's own ruff configuration." in review.summary
+    titles = [
+        row.title
+        for row in db.execute(select(Finding).where(Finding.review_id == review.id)).scalars()
+    ]
+    # the repo's select keeps F401 and drops the rest of the ruff family;
+    # F821 is ruff-only in this fixture, so its absence proves whose rules ran
+    assert any(title.startswith("F401:") for title in titles)
+    assert not any(title.startswith("F821:") for title in titles)
+
+
 def test_process_job_skips_unclaimable(db, github, review_and_job):
     _review, job = review_and_job
     jobs.claim_job(db, job.id, "other-worker")
@@ -940,6 +992,50 @@ def test_truncation_and_analyzer_skip_markers_persist(db, github, repo_review_an
     markers = review.pipeline_version.split()
     assert "findings_truncated" in markers
     assert "analyzers_skipped=eslint,ruff" in markers  # sorted, comma-joined
+
+
+def test_ruff_repo_config_marker_persists(db, github, repo_review_and_job, monkeypatch):
+    from app.ai.mock import MockProvider
+    from app.analysis.models import ReviewResult, ReviewStats
+
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+    stats = ReviewStats(ruff_config_source="repository")
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", MockProvider(), "server")
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_review",
+        lambda *args, **kwargs: ReviewResult(summary="stubbed", findings=[], stats=stats),
+    )
+
+    assert runner.process_job(db, job.id, "w1") == "completed"
+    db.refresh(review)
+    assert "ruff_config=repository" in review.pipeline_version.split()
+
+
+def test_ruff_repo_config_failure_marker_persists(db, github, repo_review_and_job, monkeypatch):
+    from app.ai.mock import MockProvider
+    from app.analysis.models import ReviewResult, ReviewStats
+
+    review, job = repo_review_and_job
+    github.tarballs[("octocat/alpha", REPO_HEAD)] = make_tarball({"app.py": b"x = 1\n"})
+    stats = ReviewStats(ruff_repo_config_failed=True)
+    monkeypatch.setattr(
+        runner, "resolve_provider", lambda db_, user_id: ("cheap", MockProvider(), "server")
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_review",
+        lambda *args, **kwargs: ReviewResult(summary="stubbed", findings=[], stats=stats),
+    )
+
+    assert runner.process_job(db, job.id, "w1") == "completed"
+    db.refresh(review)
+    markers = review.pipeline_version.split()
+    assert "ruff_config=repository_failed" in markers
+    assert "ruff_config=repository" not in markers
 
 
 def test_a_cancel_during_analysis_is_not_overwritten_by_the_result(

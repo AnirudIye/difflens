@@ -64,6 +64,32 @@ def workspace_with(tmp_path: Path, files: dict[str, str], changed: dict[str, ran
 
 
 @needs_eslint
+def test_secrets_never_reach_the_eslint_child_environment(tmp_path, monkeypatch):
+    # The worker's environment holds real secrets; a linter child needs none
+    # of them, so it gets the allowlisted environment and nothing else
+    workspace, index = workspace_with(tmp_path, {"a.js": "var x = 1\n"})
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "canary-value")
+    captured: dict = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "[]"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr(eslint_adapter.subprocess, "run", fake_run)
+    ESLintAnalyzer().analyze(workspace, index)
+
+    env = captured["env"]
+    assert env is not None
+    assert all(key.upper() != "TOKEN_ENCRYPTION_KEY" for key in env)
+    assert any(key.upper() == "PATH" for key in env)
+
+
+@needs_eslint
 def test_reports_the_defects_in_a_typescript_file(tmp_path):
     workspace, index = workspace_with(
         tmp_path,

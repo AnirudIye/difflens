@@ -29,6 +29,7 @@ from app.ai.errors import AIProviderConfigError, UserAIKeyError
 from app.ai.factory import resolve_provider
 from app.ai.mock import MockProvider
 from app.analysis.ai_review import DEMO_AI_MODEL
+from app.analysis.analyzers.ruff_adapter import RUFF_CONFIG_FILES
 from app.analysis.models import ReviewJob as AnalysisJob
 from app.analysis.models import ReviewResult
 from app.analysis.pipeline import AnalysisError, run_review
@@ -152,6 +153,26 @@ def populate_workspace(
     return skipped
 
 
+def fetch_ruff_config(client: GitHubClient, full_name: str, head_sha: str, workspace: Path) -> None:
+    """Fetch the repository's root ruff config into a pull request workspace.
+
+    A PR workspace holds only changed files, so without this the analyzer's
+    repo-config switch could only ever see a config the pull request itself
+    touched. A missing name is the normal case, never an error; a name the PR
+    already wrote is kept, since that IS the head-state content.
+    """
+    for name in RUFF_CONFIG_FILES:
+        destination = workspace / name
+        if destination.exists():
+            continue
+        try:
+            blob = client.get_file_content(full_name, name, head_sha)
+        except GitHubNotFound:
+            continue
+        if blob is not None:
+            destination.write_bytes(blob)
+
+
 def _persist_success(
     db: Session,
     job: ReviewJob,
@@ -224,6 +245,8 @@ def _persist_success(
                 stats.analyzers_skipped,
                 f"analyzers_skipped={','.join(sorted(stats.analyzers_skipped))}",
             ),
+            (stats.ruff_config_source == "repository", "ruff_config=repository"),
+            (stats.ruff_repo_config_failed, "ruff_config=repository_failed"),
             (
                 review.repository_id is not None,
                 f"ai_coverage={stats.ai_files_covered}/{stats.ai_files_total}",
@@ -488,6 +511,7 @@ def run_claimed_job(db: Session, job: ReviewJob, worker_id: str) -> str:
                             for item in files
                             if item["status"] != "removed" and not item.get("patch")
                         )
+                        fetch_ruff_config(client, repository.full_name, review.head_sha, workspace)
                         if outcome := _checkpoint(db, job, worker_id):
                             return outcome
 

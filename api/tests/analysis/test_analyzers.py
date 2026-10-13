@@ -210,8 +210,10 @@ def test_a_filename_that_looks_like_a_flag_cannot_disarm_ruff(tmp_path):
     """The same argv injection as the ESLint case, against ruff.
 
     A pull request that adds a file named "--ignore=S105.py" used to choose
-    which rules ran over the rest of the diff. --isolated stops a config file
-    from doing it; only the end-of-options separator stops a file name.
+    which rules ran over the rest of the diff. Only the end-of-options
+    separator stops a file name, and it is mode-independent: a repository
+    may choose its rules through a root ruff config (visibly, with a
+    provenance note), but never through a file name.
     """
     from app.analysis.analyzers.ruff_adapter import RuffAnalyzer
     from app.analysis.diffs.parser import build_diff_index
